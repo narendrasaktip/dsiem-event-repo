@@ -1,11 +1,4 @@
 #!/bin/bash
-# =========================================================
-# Skrip untuk Mengatur Environment Variable SIEM
-# 1. Mengekspor variabel ke environment.
-# 2. Membuat file template kosong (.template).
-# 3. Mendaftarkan cron job untuk master_coordinator.py.
-# 4. MENGHAPUS dirinya sendiri setelah selesai.
-# =========================================================
 
 echo "[INFO] Mengekspor kredensial ke environment..."
 
@@ -32,16 +25,17 @@ echo "[INFO] Semua variabel berhasil diekspor."
 echo "[INFO] Memeriksa dan mendaftarkan cron job untuk master_coordinator.py..."
 
 # Menggunakan $(pwd) untuk mendapatkan path absolut, ini sangat penting untuk cron
-CRON_JOB_COMMAND="/usr/bin/python3 $(pwd)/master_coordinator.py >> $(pwd)/cron.log 2>&1"
+CRON_JOB_COMMAND="/usr/bin/python $(pwd)/master_coordinator.py >> $(pwd)/cron.log 2>&1"
 CRON_JOB_SCHEDULE="*/10 * * * *"
+CRON_JOB_COMMENT="#Auto Update Directive" #
 CRON_JOB_FULL="${CRON_JOB_SCHEDULE} ${CRON_JOB_COMMAND}"
 
 # Cek apakah job sudah ada untuk menghindari duplikat
 (crontab -l 2>/dev/null | grep -Fq "$CRON_JOB_COMMAND")
 if [ $? -ne 0 ]; then
-  # Tambahkan job baru menggunakan metode yang aman
-  (crontab -l 2>/dev/null; echo "$CRON_JOB_FULL") | crontab -
-  echo "[SUCCESS] Cron job untuk 10 menit sekali berhasil ditambahkan."
+  # Tambahkan job baru (komentar + perintah) menggunakan metode yang aman
+  (crontab -l 2>/dev/null; echo "$CRON_JOB_COMMENT"; echo "$CRON_JOB_FULL") | crontab -
+  echo "[SUCCESS] Cron job dengan komentar berhasil ditambahkan."
 else
   echo "[INFO] Cron job sudah ada, tidak ada perubahan."
 fi
