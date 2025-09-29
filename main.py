@@ -25,6 +25,8 @@ try:
 except Exception:
     io = None
 from requests.auth import HTTPBasicAuth
+from dotenv import load_dotenv
+load_dotenv() 
 
 # ====== CONFIG ENV ======
 ES_HOST = os.getenv("ES_HOST", "http://opensearch:9200")

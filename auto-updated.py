@@ -5,6 +5,8 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+load_dotenv() 
 # =========================================================
 # CONFIG
 # =========================================================

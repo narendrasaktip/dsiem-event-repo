@@ -8,7 +8,8 @@ import base64
 import requests
 import shutil
 import subprocess
-
+from dotenv import load_dotenv
+load_dotenv() 
 # ====== KONFIGURASI ENV ======
 GITHUB_REPO   = os.getenv("GITHUB_REPO")
 GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN")
