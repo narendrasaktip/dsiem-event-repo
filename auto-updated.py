@@ -11,19 +11,6 @@ from datetime import datetime, timedelta
 CFG_PATH = os.getenv("SYNC_CFG", "./auto-updater.json")
 DEFAULT_GH_API_VERSION = "2022-11-28"
 
-# Membaca kredensial dari Environment Variables, sama seperti main.py
-ES_PASSWD_FILE = os.getenv("ES_PASSWD_FILE", "/root/.passwd/es_passwd")
-ES_USER_LOOKUP = os.getenv("ES_USER_LOOKUP", "systemadm")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-
-# === TAMBAHKAN BLOK INI UNTUK EMAIL ===
-EMAIL_SMTP_SERVER = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
-EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", 587))
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
-EMAIL_RECIPIENTS = os.getenv("EMAIL_RECIPIENTS")
-# === AKHIR BLOK TAMBAHAN ===
-
 # =========================================================
 # PY2/3 string compat
 # =========================================================
@@ -59,30 +46,29 @@ def die(msg, code=2):
 # =========================================================
 # Fungsi Baru: Notifikasi Email
 # =========================================================
-# auto-updated.py
-
 def send_notification_email(email_cfg, customer_name, header_name, new_events):
-    # 1. Tetap periksa flag 'enabled' dari file konfigurasi (email.json)
     if not email_cfg.get("enabled", False):
-        info("Email notifications are disabled in the config file. Skipping.")
-        return
-
-    # 2. Validasi bahwa semua variabel environment yang dibutuhkan ada
-    if not all([EMAIL_SENDER, EMAIL_APP_PASSWORD, EMAIL_RECIPIENTS]):
-        warn("Email environment variables (EMAIL_SENDER, EMAIL_APP_PASSWORD, EMAIL_RECIPIENTS) are not fully set. Skipping email notification.")
+        info("Email notifications are disabled in the config. Skipping.")
         return
 
     section("Sending Email Notification")
+    sender = email_cfg["sender_email"]
+    password = email_cfg["app_password"]
     
-    # 3. Ambil penerima dari env var, ubah string "a,b,c" menjadi list ['a', 'b', 'c']
-    recipients = [email.strip() for email in EMAIL_RECIPIENTS.split(',')]
-    if not recipients:
-        err("EMAIL_RECIPIENTS is set but contains no valid email addresses. Aborting email.")
+    recipients = email_cfg.get("recipient_emails", [])
+    if not isinstance(recipients, list) or not recipients:
+        err("'recipient_emails' is not a valid list or is empty in config. Aborting email.")
         return
-        
+
     count = len(new_events)
+    # Buat subjek email yang baru
     subject = "{} - {} New Events Found for {}".format(customer_name, count, header_name)
+    
+    # --- FIX 3: Logika Waktu Diperbaiki & Dibuat Kompatibel ---
+    # Dapatkan waktu UTC saat ini dan tambahkan 7 jam untuk mendapatkan waktu WIB
     now_in_wib = datetime.utcnow() + timedelta(hours=7)
+    
+    # Format string waktu sesuai kebutuhan
     detection_time = now_in_wib.strftime('%d %B %Y, %H:%M:%S WIB')
     
     event_rows_html = "".join([
@@ -201,18 +187,17 @@ def send_notification_email(email_cfg, customer_name, header_name, new_events):
 
     # Setup MIME
     msg = MIMEMultipart('alternative')
-    msg['From'] = EMAIL_SENDER
+    msg['From'] = sender
     msg['To'] = ", ".join(recipients)
     msg['Subject'] = subject
     msg.attach(MIMEText(body_html, 'html'))
 
     server = None
     try:
-        # 4. Gunakan variabel global dari environment untuk koneksi SMTP
-        server = smtplib.SMTP(EMAIL_SMTP_SERVER, EMAIL_SMTP_PORT)
+        server = smtplib.SMTP(email_cfg["smtp_server"], email_cfg["smtp_port"])
         server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
-        server.sendmail(EMAIL_SENDER, recipients, msg.as_string())
+        server.login(sender, password)
+        server.sendmail(sender, recipients, msg.as_string())
         info("Email notification sent successfully to: {}.".format(", ".join(recipients)))
     except Exception as e:
         err("Failed to send email: {}".format(e))
@@ -454,7 +439,7 @@ def load_cred(path, user):
 
 def fetch_titles(es_cfg, q_cfg, debug=False):
     host, verify, timeout = es_cfg["host"], es_cfg.get("verify_tls", False), es_cfg.get("timeout", 3000)
-    u,p = load_cred(ES_PASSWD_FILE, ES_USER_LOOKUP)
+    u,p = load_cred(es_cfg["cred_file"], es_cfg["cred_user"])
     auth = HTTPBasicAuth(u,p)
     index, field, size = q_cfg["index"], q_cfg["field"], int(q_cfg.get("size", 2000))
     agg_field = field if field.endswith(".keyword") else field + ".keyword"
@@ -573,7 +558,7 @@ def main():
     
     es_cfg, q_cfg, layout, file70, dircfg, gh_cfg = cfg["es"], cfg["query"], cfg["layout"], cfg["file70"], cfg["directive"], cfg["github"]
     
-    gh_token = GITHUB_TOKEN
+    gh_token = gh_cfg.get("token")
     if not gh_token:
         die("Kunci 'token' tidak ditemukan di bagian 'github' pada file auto-updater.json.", code=2)
     

@@ -32,8 +32,8 @@ VERIFY_TLS = os.getenv("VERIFY_TLS", "false").lower() == "true"
 TIMEOUT = int(os.getenv("TIMEOUT", "3000"))
 PLUGIN_SID_START = int(os.getenv("PLUGIN_SID_START", "1"))
 
-ES_PASSWD_FILE = os.getenv("ES_PASSWD_FILE")
-ES_USER_LOOKUP = os.getenv("ES_USER_LOOKUP")
+ES_PASSWD_FILE = os.getenv("ES_PASSWD_FILE", "/root/.passwd/es_passwd")
+ES_USER_LOOKUP = os.getenv("ES_USER_LOOKUP", "systemadm")
 
 DEFAULT_TEMPLATE_PATH = os.getenv("TEMPLATE_PATH", "./template-70.js")
 DEFAULT_VECTOR_TEMPLATE_PATH = os.getenv("VECTOR_TEMPLATE_PATH", "./template-vector.js")
@@ -48,9 +48,9 @@ LOGSTASH_JSON_DICT_DIR = "/etc/logstash/pipelines/dsiem-events/dsiem-plugin-json
 
 
 # GitHub API (Contents API)
-GITHUB_REPO   = os.getenv("GITHUB_REPO")
-GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN")
-GITHUB_BRANCH = os.getenv("GITHUB_BRANCH")
+GITHUB_REPO   = os.getenv("GITHUB_REPO", "narendrasaktip/siem-event-name-repository")
+GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN", "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")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 
 AUTO_USE_CONFIG = os.getenv("AUTO_USE_CONFIG", "0") == "1"
 PLUGIN_REGISTRY_PATH = "plugin_id.json"
@@ -393,6 +393,8 @@ def generate_updater_config(output_path, context):
             ("host", context.get("es_host")),
             ("verify_tls", context.get("verify_tls")),
             ("timeout", context.get("timeout")),
+            ("cred_file", context.get("es_passwd_file")),
+            ("cred_user", context.get("es_user_lookup"))
         ])),
         ("query", OrderedDict([
             ("index", context.get("index_pattern")),
@@ -412,6 +414,7 @@ def generate_updater_config(output_path, context):
         ("directive", context.get("directive_cfg_out")),
         ("github", OrderedDict([
             ("repo", context.get("github_repo")),
+            ("token", context.get("github_token")),
             ("branch", context.get("github_branch")),
             ("template_path", context.get("template_path_70")),
             ("plugin_registry_path", context.get("plugin_registry_path"))
