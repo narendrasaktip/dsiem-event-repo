@@ -5,8 +5,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
-load_dotenv() 
+
 # =========================================================
 # CONFIG
 # =========================================================
@@ -14,8 +13,8 @@ CFG_PATH = os.getenv("SYNC_CFG", "./auto-updater.json")
 DEFAULT_GH_API_VERSION = "2022-11-28"
 
 # Membaca kredensial dari Environment Variables, sama seperti main.py
-ES_PASSWD_FILE = os.getenv("ES_PASSWD_FILE", "/root/.passwd/es_passwd")
-ES_USER_LOOKUP = os.getenv("ES_USER_LOOKUP", "systemadm")
+ES_PASSWD_FILE = os.getenv("ES_PASSWD_FILE")
+ES_USER_LOOKUP = os.getenv("ES_USER_LOOKUP")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # === TAMBAHKAN BLOK INI UNTUK EMAIL ===

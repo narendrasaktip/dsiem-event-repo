@@ -3,8 +3,6 @@ import json
 import subprocess
 import sys
 from datetime import datetime
-from dotenv import load_dotenv
-load_dotenv() 
 
 JOBS_FILE = 'master_jobs.json'
 UPDATER_SCRIPT = 'auto-updated.py'
