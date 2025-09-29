@@ -49,7 +49,7 @@ LOGSTASH_JSON_DICT_DIR = "/etc/logstash/pipelines/dsiem-events/dsiem-plugin-json
 
 # GitHub API (Contents API)
 GITHUB_REPO   = os.getenv("GITHUB_REPO", "narendrasaktip/siem-event-name-repository")
-GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN", "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")
+GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN", "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")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 
 AUTO_USE_CONFIG = os.getenv("AUTO_USE_CONFIG", "0") == "1"
