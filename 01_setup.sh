@@ -1,4 +1,11 @@
 #!/bin/bash
+# =========================================================
+# Skrip untuk Mengatur Environment Variable SIEM
+# 1. Mengekspor variabel ke environment.
+# 2. Membuat file template kosong (.template).
+# 3. Mendaftarkan cron job dengan komentar dan path yang benar.
+# 4. MENGHAPUS dirinya sendiri setelah selesai.
+# =========================================================
 
 echo "[INFO] Mengekspor kredensial ke environment..."
 
@@ -22,19 +29,26 @@ grep "^export" "$0" | sed 's/=\".*\"/=\"\"/' > "$TEMPLATE_FILE"
 
 echo "[INFO] Semua variabel berhasil diekspor."
 
-# --- BAGIAN BARU: Mendaftarkan Cron Job ---
+# --- BAGIAN CRON JOB YANG SUDAH DIPERBAIKI (FINAL) ---
 echo "[INFO] Memeriksa dan mendaftarkan cron job untuk master_coordinator.py..."
 
-# Menggunakan $(pwd) untuk mendapatkan path absolut, ini sangat penting untuk cron
-CRON_JOB_COMMAND="/usr/bin/python $(pwd)/master_coordinator.py >> $(pwd)/cron.log 2>&1"
+# Dapatkan path absolut dari direktori proyek saat ini
+PROJECT_DIR=$(pwd)
+# Tentukan path absolut ke file template yang akan di-source oleh cron
+TEMPLATE_FILE_FOR_CRON="${PROJECT_DIR}/01_setup.sh.template"
+
+# Perintah cron: 1. Source file template, 2. Pindah direktori, 3. Jalankan skrip
+CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && /usr/bin/python3 master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
 CRON_JOB_SCHEDULE="*/10 * * * *"
-CRON_JOB_COMMENT="#Auto Update Directive" #
+CRON_JOB_COMMENT="#Auto Update Directive"
+
+# Gabungkan jadwal dan perintah menjadi satu baris
 CRON_JOB_FULL="${CRON_JOB_SCHEDULE} ${CRON_JOB_COMMAND}"
 
-# Cek apakah job sudah ada untuk menghindari duplikat
+# Cek apakah job (khususnya bagian perintahnya) sudah ada untuk menghindari duplikat
 (crontab -l 2>/dev/null | grep -Fq "$CRON_JOB_COMMAND")
 if [ $? -ne 0 ]; then
-  # Tambahkan job baru (komentar + perintah) menggunakan metode yang aman
+  # Tambahkan komentar dan job baru menggunakan metode yang aman
   (crontab -l 2>/dev/null; echo "$CRON_JOB_COMMENT"; echo "$CRON_JOB_FULL") | crontab -
   echo "[SUCCESS] Cron job dengan komentar berhasil ditambahkan."
 else

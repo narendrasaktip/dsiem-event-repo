@@ -82,8 +82,17 @@ def send_notification_email(email_cfg, customer_name, header_name, new_events):
         return
         
     count = len(new_events)
-    subject = "{} - {} New Events Found for {}".format(customer_name, count, header_name)
+    
+    # Pindahkan definisi waktu ke atas agar bisa dipakai untuk subjek dan isi email
     now_in_wib = datetime.utcnow() + timedelta(hours=7)
+    
+    # 1. Buat format timestamp yang ringkas khusus untuk subjek
+    subject_timestamp = now_in_wib.strftime('%d %b %Y | %H:%M WIB')
+    
+    # 2. Gabungkan timestamp ke dalam string subjek
+    subject = "[New Event] [{}] - {} New Events for {} - ({})".format(customer_name, count, header_name, subject_timestamp)
+    
+    # Variabel ini tetap digunakan untuk isi (body) email agar tetap detail
     detection_time = now_in_wib.strftime('%d %B %Y, %H:%M:%S WIB')
     
     event_rows_html = "".join([
@@ -576,7 +585,7 @@ def main():
     
     gh_token = GITHUB_TOKEN
     if not gh_token:
-        die("Kunci 'token' tidak ditemukan di bagian 'github' pada file auto-updater.json.", code=2)
+        die("Environment variable GITHUB_TOKEN belum di-set atau kosong. Harap jalankan 'source 01-setup.sh' terlebih dahulu.", code=2)
     
     paths = gh_paths(layout["device"], layout["module"], layout.get("submodule"), layout.get("filter_key"))
     siem_plugin_type, plugin_id = paths["full_slug"], int(file70["plugin_id"])
@@ -689,6 +698,5 @@ def main():
 
 if __name__ == "__main__":
     try: sys.exit(main())
-    except SystemExit: pass
     except Exception as e:
         err("Unexpected error: {}".format(e)); traceback.print_exc(); sys.exit(99)

@@ -409,7 +409,13 @@ def generate_updater_config(output_path, context):
         ("file70", OrderedDict([
             ("plugin_id", context.get("plugin_id_final"))
         ])),
-        ("directive", context.get("directive_cfg_out")),
+        ("directive", OrderedDict([
+            ("HEADER", context.get("directive_cfg_out", {}).get("HEADER")),
+            ("CATEGORY", context.get("directive_cfg_out", {}).get("CATEGORY")),
+            ("KINGDOM", context.get("directive_cfg_out", {}).get("KINGDOM")),
+            ("DISABLED", context.get("directive_cfg_out", {}).get("DISABLED")),
+            ("template_id", context.get("directive_cfg_out", {}).get("TEMPLATE_ID"))
+        ])),
         ("github", OrderedDict([
             ("repo", context.get("github_repo")),
             ("branch", context.get("github_branch")),

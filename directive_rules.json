@@ -111,7 +111,7 @@
       "custom_data3": "ANY"
     }
   ],
-  "Prohibited Software Usage (Raise on Stage 1)": [
+  "Prohibited Software Usage (Raise on Stage 2)": [
     {
       "stage": 1,
       "name": "{TITLE}",
@@ -135,7 +135,7 @@
       "name": "{TITLE}",
       "plugin_id": "{PLUGIN_ID}",
       "plugin_sid": ["{SID}"],
-      "occurrence": 10,
+      "occurrence": 5,
       "reliability": 5,
       "timeout": 1800,
       "from": ":1",
