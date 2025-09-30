@@ -1,15 +1,15 @@
 #!/bin/bash
 # =========================================================
 # Skrip untuk Mengatur Environment Variable SIEM
-# 1. Mengekspor variabel ke environment.
-# 2. Membuat file template kosong (.template).
+# 1. Mengekspor variabel ke environment sesi ini.
+# 2. Membuat file template kosong (.template) untuk cron.
 # 3. Mendaftarkan cron job dengan komentar dan path yang benar.
 # 4. MENGHAPUS dirinya sendiri setelah selesai.
 # =========================================================
 
 echo "[INFO] Mengekspor kredensial ke environment..."
 
-export GITHUB_TOKEN="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"
+export GITHUB_TOKEN="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"
 export GITHUB_REPO="narendrasaktip/siem-event-name-repository"
 export GITHUB_BRANCH="main"
 export ES_HOST="http://opensearch:9200"
@@ -29,14 +29,17 @@ grep "^export" "$0" | sed 's/=\".*\"/=\"\"/' > "$TEMPLATE_FILE"
 
 echo "[INFO] Semua variabel berhasil diekspor."
 
-# --- BAGIAN CRON JOB YANG SUDAH DIPERBAIKI ---
+# --- BAGIAN CRON JOB YANG SUDAH DIPERBAIKI (FINAL) ---
 echo "[INFO] Memeriksa dan mendaftarkan cron job untuk master_coordinator.py..."
 
 # Dapatkan path absolut dari direktori proyek saat ini
 PROJECT_DIR=$(pwd)
+# Tentukan path absolut ke file template yang akan di-source oleh cron
+TEMPLATE_FILE_FOR_CRON="${PROJECT_DIR}/01_setup.sh.template"
 
-# Definisikan perintah cron job dengan `cd` untuk memastikan direktori kerja yang benar
-CRON_JOB_COMMAND="cd ${PROJECT_DIR} && /usr/bin/python master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
+# Perintah cron: 1. Source file template, 2. Pindah direktori, 3. Jalankan skrip
+# Menggunakan python3 untuk memastikan kompatibilitas
+CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && /usr/bin/python3 master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
 CRON_JOB_SCHEDULE="*/10 * * * *"
 CRON_JOB_COMMENT="#Auto Update Directive"
 
@@ -54,9 +57,9 @@ else
 fi
 # -----------------------------------------
 
-echo "[DANGER] Menghapus skrip ini (`$0`) sekarang..."
+echo "[DANGER] Menghapus skrip ini (\`$0\`) sekarang..."
 rm -- "$0"
 
 echo "[SUCCESS] Selesai. File template dan cron job telah disiapkan."
-echo "[SUCCESS] Fungsi disimpan pada file ${TEMPLATE_FILE}"
+echo "[SUCCESS] Konfigurasi template disimpan pada file ${TEMPLATE_FILE}"
 echo "[SUCCESS] Lanjutkan dengan menjalankan perintah 'python 02_pull-directive.py'"
