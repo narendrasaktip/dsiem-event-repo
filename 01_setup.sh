@@ -29,16 +29,14 @@ grep "^export" "$0" | sed 's/=\".*\"/=\"\"/' > "$TEMPLATE_FILE"
 
 echo "[INFO] Semua variabel berhasil diekspor."
 
-# --- BAGIAN CRON JOB YANG SUDAH DIPERBAIKI (FINAL) ---
+# --- BAGIAN CRON JOB YANG SUDAH DIPERBAIKI ---
 echo "[INFO] Memeriksa dan mendaftarkan cron job untuk master_coordinator.py..."
 
 # Dapatkan path absolut dari direktori proyek saat ini
 PROJECT_DIR=$(pwd)
-# Tentukan path absolut ke file template yang akan di-source oleh cron
-TEMPLATE_FILE_FOR_CRON="${PROJECT_DIR}/01_setup.sh.template"
 
-# Perintah cron: 1. Source file template, 2. Pindah direktori, 3. Jalankan skrip
-CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && /usr/bin/python master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
+# Definisikan perintah cron job dengan `cd` untuk memastikan direktori kerja yang benar
+CRON_JOB_COMMAND="cd ${PROJECT_DIR} && /usr/bin/python master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
 CRON_JOB_SCHEDULE="*/10 * * * *"
 CRON_JOB_COMMENT="#Auto Update Directive"
 
