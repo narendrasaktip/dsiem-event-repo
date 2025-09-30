@@ -3,7 +3,7 @@
 # Skrip untuk Mengatur Environment Variable SIEM
 # 1. Mengekspor variabel ke environment sesi ini.
 # 2. Membuat file template kosong (.template) untuk cron.
-# 3. Mendaftarkan cron job dengan komentar dan path yang benar.
+# 3. Mendaftarkan cron job dengan deteksi Python 3.
 # 4. MENGHAPUS dirinya sendiri setelah selesai.
 # =========================================================
 
@@ -32,14 +32,24 @@ echo "[INFO] Semua variabel berhasil diekspor."
 # --- BAGIAN CRON JOB YANG SUDAH DIPERBAIKI (FINAL) ---
 echo "[INFO] Memeriksa dan mendaftarkan cron job untuk master_coordinator.py..."
 
+# --- PATCH: Deteksi Python 3 secara dinamis ---
+# Cari path absolut untuk python3, fallback ke python jika tidak ada
+if command -v python3 &> /dev/null; then
+    PYTHON_EXEC=$(command -v python3)
+else
+    echo "[WARN] python3 tidak ditemukan, mencoba menggunakan python."
+    PYTHON_EXEC=$(command -v python)
+fi
+echo "[INFO] Python executable yang akan digunakan oleh cron: ${PYTHON_EXEC}"
+# --- AKHIR DARI PATCH ---
+
 # Dapatkan path absolut dari direktori proyek saat ini
 PROJECT_DIR=$(pwd)
 # Tentukan path absolut ke file template yang akan di-source oleh cron
 TEMPLATE_FILE_FOR_CRON="${PROJECT_DIR}/01_setup.sh.template"
 
 # Perintah cron: 1. Source file template, 2. Pindah direktori, 3. Jalankan skrip
-# Menggunakan python3 untuk memastikan kompatibilitas
-CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && /usr/bin/python master_coordinator.py"
+CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && ${PYTHON_EXEC} master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
 CRON_JOB_SCHEDULE="*/10 * * * *"
 CRON_JOB_COMMENT="#Auto Update Directive"
 
