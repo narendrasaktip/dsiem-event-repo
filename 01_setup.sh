@@ -9,7 +9,7 @@
 
 echo "[INFO] Mengekspor kredensial ke environment..."
 
-export GITHUB_TOKEN="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"
+export GITHUB_TOKEN="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"
 export GITHUB_REPO="narendrasaktip/siem-event-name-repository"
 export GITHUB_BRANCH="main"
 export ES_HOST="http://opensearch:9200"
@@ -39,7 +39,7 @@ TEMPLATE_FILE_FOR_CRON="${PROJECT_DIR}/01_setup.sh.template"
 
 # Perintah cron: 1. Source file template, 2. Pindah direktori, 3. Jalankan skrip
 # Menggunakan python3 untuk memastikan kompatibilitas
-CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && /usr/bin/python3 master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
+CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && /usr/bin/python master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
 CRON_JOB_SCHEDULE="*/10 * * * *"
 CRON_JOB_COMMENT="#Auto Update Directive"
 
