@@ -9,7 +9,7 @@
 
 echo "[INFO] Mengekspor kredensial ke environment..."
 
-export GITHUB_TOKEN="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"
+export GITHUB_TOKEN="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"
 export GITHUB_REPO="narendrasaktip/siem-event-name-repository"
 export GITHUB_BRANCH="main"
 export ES_HOST="http://opensearch:9200"
