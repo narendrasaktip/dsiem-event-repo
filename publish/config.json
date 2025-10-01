@@ -1,0 +1,42 @@
+#!/bin/bash
+export GITHUB_TOKEN="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"
+export GITHUB_REPO="narendrasaktip/siem-event-name-repository"
+export GITHUB_BRANCH="main"
+export ES_HOST="http://opensearch:9200"
+export ES_PASSWD_FILE="/root/.passwd/es_passwd"
+export ES_USER_LOOKUP="systemadm"
+export EMAIL_SMTP_SERVER="smtp.gmail.com"
+export EMAIL_SMTP_PORT="587"
+export EMAIL_SENDER="narendra.prabawa@defenxor.com"
+export EMAIL_APP_PASSWORD="okmx ulyc ynym vfln"
+export EMAIL_RECIPIENTS="narendra.prabawa@defenxor.com,jose.alnevo@defenxor.com,muhammad.madani@defenxor.com,andi.wahyudi@defenxor.com,dims.ssa@defenxor.com,soc@defenxor.com"
+
+# --- PATCH: Deteksi Python 3 secara dinamis ---
+# Cari path absolut untuk python3, fallback ke python jika tidak ada
+if command -v python3 &> /dev/null; then
+    PYTHON_EXEC=$(command -v python3)
+else
+    echo "[WARN] python3 tidak ditemukan, mencoba menggunakan python."
+    PYTHON_EXEC=$(command -v python)
+fi
+echo "[INFO] Python executable yang akan digunakan oleh cron: ${PYTHON_EXEC}"
+# --- AKHIR DARI PATCH ---
+
+# Dapatkan path absolut dari direktori proyek saat ini
+PROJECT_DIR=$(pwd)
+# Tentukan path absolut ke file template yang akan di-source oleh cron
+TEMPLATE_FILE_FOR_CRON="${PROJECT_DIR}/config.json"
+
+# Perintah cron: 1. Source file template, 2. Pindah direktori, 3. Jalankan skrip
+CRON_JOB_COMMAND=". ${TEMPLATE_FILE_FOR_CRON} && cd ${PROJECT_DIR} && ${PYTHON_EXEC} master_coordinator.py >> ${PROJECT_DIR}/cron.log 2>&1"
+CRON_JOB_SCHEDULE="*/10 * * * *"
+CRON_JOB_COMMENT="#Auto Update Directive"
+
+# Gabungkan jadwal dan perintah menjadi satu baris
+CRON_JOB_FULL="${CRON_JOB_SCHEDULE} ${CRON_JOB_COMMAND}"
+
+# Cek apakah job (khususnya bagian perintahnya) sudah ada untuk menghindari duplikat
+(crontab -l 2>/dev/null | grep -Fq "$CRON_JOB_COMMAND")
+if [ $? -ne 0 ]; then
+  # Tambahkan komentar dan job baru menggunakan metode yang aman
+  (crontab -l 2>/dev/null; echo "$CRON_JOB_COMMENT"; echo "$CRON_JOB_FULL") | crontab -
