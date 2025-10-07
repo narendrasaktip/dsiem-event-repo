@@ -658,11 +658,15 @@ def deep_diff(base, new):
     return diff
 
 # ====== MAPPING COLLECTION ======
-def collect_field_mappings(cfg, use_remote_defaults):
+# ====== MAPPING COLLECTION ======
+def collect_field_mappings(cfg, use_remote_defaults, directive_category=None, full_slug=None):
+    if directive_category: cfg['category_value'] = directive_category
+    if full_slug: cfg['subcategory_value'] = full_slug
+    
     mappings = {}
     print("\n=== Isian Field Mapping (H/F) ===")
 
-    def get_mapping(key, default_field=None):
+    def get_mapping(key, default_field=None, hardcode_default=None):
         m_default = (cfg.get(key+"_mode") or "").lower()
         v_default = cfg.get(key+"_value")
         
@@ -671,10 +675,16 @@ def collect_field_mappings(cfg, use_remote_defaults):
 
         mode = ask_hf(key, default_mode=(m_default if m_default in ("h","f") else None))
         while True:
-            placeholder = " (default: {})".format(default_field) if (mode=="f" and default_field) else ""
+            placeholder = ""
+            if mode == "f" and default_field:
+                placeholder = " (default: {})".format(default_field)
+            elif mode == "h" and hardcode_default:
+                placeholder = " (default: {})".format(hardcode_default)
+
             val = py_input("{} value{}: ".format(key, placeholder)).strip()
             
             if mode=="h":
+                if not val and hardcode_default: val = hardcode_default
                 if not val and v_default: val = v_default
                 if not val:
                     print("Tidak boleh kosong untuk hardcode.")
@@ -688,15 +698,25 @@ def collect_field_mappings(cfg, use_remote_defaults):
                     continue
                 return mode, val
     
-    # FIXED: Changed keys 'src_ip'/'dst_ip' to 'src_ips'/'dst_ips' to match placeholders
     fields_to_map = [
         ("sensor", None), ("product", None), ("category", None),
         ("subcategory", "subcategory"), ("src_ips", "src_ips"), ("dst_ips", "dst_ips"),
         ("src_port", "src_port"), ("dst_port", "dst_port"), ("protocol", "protocol")
     ]
     for key, default in fields_to_map:
-        mode, value = get_mapping(key, default_field=default)
-        mappings[key] = {"mode": mode, "value": value}
+        if key == "category":
+            mode, value = get_mapping(key, default_field=default, hardcode_default=directive_category)
+            mappings[key] = {"mode": mode, "value": value}
+        elif key == "subcategory":
+            print("[AUTO] Subcategory diisi dari full_slug: {}".format(full_slug))
+            mappings[key] = {"mode": "h", "value": full_slug}
+        elif key == "protocol":
+            print("[AUTO] Protocol diisi otomatis: hardcoded 'TCP'")
+            mappings[key] = {"mode": "h", "value": "TCP"}
+        else:
+            mode, value = get_mapping(key, default_field=default)
+            mappings[key] = {"mode": mode, "value": value}
+
 
     print("\n=== Custom Data (label = hardcoded, data = field) ===")
     custom_data = {}
@@ -723,7 +743,7 @@ def collect_field_mappings(cfg, use_remote_defaults):
     if not ts_in:
         if use_remote_defaults or AUTO_USE_CONFIG:
             raise SystemExit("[CFG ERROR] timestamp_field belum ada di config.json.")
-        ts_in = py_input("Field timestamp (default: @timestamp): ").strip() or "@timestamp"
+        ts_in = py_input("Field timestamp (default: timestamp): ").strip() or "timestamp"
     else:
         print("[CFG] timestamp_field (from GitHub): {}".format(ts_in))
 
@@ -1359,18 +1379,41 @@ def main():
             print("[SYNC] Up-to-date. Tidak ada penambahan.")
         else:
             print("[SYNC] Tambahan baru: {}".format(len(added)))
-    
+
     local_tsv = os.path.join(OUT_DIR, "{}_plugin-sids.tsv".format(ghp["full_slug"]))
-    
+
     # --- Bagian 4: Generate Artefak Lokal (TSV, .conf, .yaml, directive, etc.) ---
     cfg_remote = {}
+    config_file = None
+
+    # 1. Coba ambil config spesifik
+    print("[CFG] Mencari config spesifik di GitHub -> {}".format(ghp["config"]))
     config_file = gh_get_file(ghp["config"])
+    if config_file:
+        print("[CFG] Config spesifik ditemukan.")
+
+    # 2. Jika tidak ada & ini adalah plugin turunan, coba ambil config parent
+    if not config_file and filter1_slug:
+        parent_dir_parts = [slug(log_type_auto)]
+        if module_slug: parent_dir_parts.append(slug(module_slug))
+        if submodule_slug: parent_dir_parts.append(slug(submodule_slug))
+        parent_path = "/".join(parent_dir_parts) + "/config.json"
+        
+        print("[CFG] Mencari config parent di -> {}".format(parent_path))
+        config_file = gh_get_file(parent_path)
+        if config_file:
+            print("[CFG] Ditemukan! Menggunakan parent config sebagai dasar.")
+
+    # 3. Muat config yang berhasil ditemukan
     if config_file:
         try:
             cfg_remote = json.loads(base64.b64decode(config_file.get("content","")).decode("utf-8","replace"))
-            print("[CFG] config.json ditemukan di GitHub.")
-        except Exception: cfg_remote = {}
-    else: print("[CFG] Belum ada config di GitHub.")
+            print("[CFG] config.json berhasil dimuat.")
+        except Exception as e:
+            print("[CFG ERROR] Gagal parse config.json: {}".format(e))
+            cfg_remote = {}
+    else: 
+        print("[CFG] Tidak ada config yang ditemukan (spesifik maupun parent). Lanjut dengan setup manual.")
 
     directive_cfg_default = cfg_remote.get("directive", {})
     default_category = directive_cfg_default.get("CATEGORY") or "Internal Spearphishing"
@@ -1382,15 +1425,18 @@ def main():
     print("\n[OK] Saved TSV -> {}".format(local_tsv))
     
     print("\n=== GENERATE KONFIGURASI ===")
-    field_data = collect_field_mappings(cfg_remote, use_remote_defaults=(AUTO_USE_CONFIG))
+    # This is the new line
+    field_data = collect_field_mappings(cfg_remote, use_remote_defaults=(AUTO_USE_CONFIG), directive_category=directive_category, full_slug=ghp["full_slug"])
 
     print("\n--- Generating Logstash (File 70) Configuration ---")
-    template_path_70 = py_input("Path template Logstash (default: {}): ".format(DEFAULT_TEMPLATE_PATH)).strip() or DEFAULT_TEMPLATE_PATH
+    template_path_70 = DEFAULT_TEMPLATE_PATH
+    print("Path template Logstash (otomatis): {}".format(template_path_70))
     conf70_name_local = "70_dsiem-plugin_{}.conf".format(ghp["full_slug"])
     conf_meta_70 = generate_file70_from_template(local_tsv, template_path_70, OUT_DIR, log_type_auto, translate_field_no_kw, spt, index_base, index_pattern, filters, field_data, forced_plugin_id=plugin_id_final, out_conf_name=conf70_name_local)
 
     print("\n--- Generating Vector Configuration ---")
-    template_path_vector = py_input("Path template Vector (default: {}): ".format(DEFAULT_VECTOR_TEMPLATE_PATH)).strip() or DEFAULT_VECTOR_TEMPLATE_PATH
+    template_path_vector = DEFAULT_VECTOR_TEMPLATE_PATH
+    print("Path template Vector (otomatis): {}".format(template_path_vector))
     vector_conf_name_local = "70_transform_dsiem-plugin-{}.yaml".format(ghp["full_slug"])
     conf_meta_vector = generate_file_vector_from_template(local_tsv, template_path_vector, OUT_DIR, log_type_auto, translate_field_no_kw, spt, filters, field_data, forced_plugin_id=plugin_id_final, out_conf_name=vector_conf_name_local)
     
