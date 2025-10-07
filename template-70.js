@@ -77,7 +77,7 @@ filter {
       id => "siem_event fields {plugin_id}"
       replace => {
         "title" => "%{[{field}]}"
-        "src_index_pattern" => "{log_type}-*"
+        "src_index_pattern" => "{src_index_pattern}"
         "sensor" => "%{[{sensor}]}"
         "product" => "%{[{product}]}"
         "src_ip" => "%{[{src_ips}]}"

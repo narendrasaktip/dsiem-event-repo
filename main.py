@@ -811,10 +811,9 @@ def generate_file_vector_from_template(tsv_path, template_path, out_dir,
     }
 
 # ====== FILE 70 BUILDER (LOGSTASH) ======
-# ====== FILE 70 BUILDER (LOGSTASH) ======
 def generate_file70_from_template(tsv_path, template_path, out_dir,
                                   log_type_auto, event_field_no_keyword, spt,
-                                  index_base, filters_for_if, 
+                                  index_base, index_pattern, filters_for_if, 
                                   field_data, forced_plugin_id,
                                   out_conf_name=None):
     field_identifier = dot_to_brackets(event_field_no_keyword)
@@ -872,7 +871,7 @@ def generate_file70_from_template(tsv_path, template_path, out_dir,
     tpl = tpl.replace("{plugin_id}", str(plugin_id))
     tpl = tpl.replace("{field}", dot_to_brackets(event_field_no_keyword))
     tpl = tpl.replace("{siem_plugin_type}", spt)
-    tpl = tpl.replace("{src_index_pattern}", '"{}-*"'.format(index_base))
+    tpl = tpl.replace("{src_index_pattern}", index_pattern)
     
     # FIX for timestamp field replacement
     # The template should use a simple placeholder like {timestamp}
@@ -1015,7 +1014,7 @@ def build_directive_entry(plugin_id, header, category, kingdom, disabled_lit, ti
     rules_list = [order_rule_fields(r) for r in rules_data]
     directive_obj = OrderedDict()
     directive_obj["id"] = alarm_id_val
-    directive_obj["name"] = "{}, {}".format(header, title())
+    directive_obj["name"] = "{}, {}".format(header, title)
     directive_obj["category"] = category
     directive_obj["kingdom"] = kingdom
     directive_obj["priority"] = 3
@@ -1388,7 +1387,7 @@ def main():
     print("\n--- Generating Logstash (File 70) Configuration ---")
     template_path_70 = py_input("Path template Logstash (default: {}): ".format(DEFAULT_TEMPLATE_PATH)).strip() or DEFAULT_TEMPLATE_PATH
     conf70_name_local = "70_dsiem-plugin_{}.conf".format(ghp["full_slug"])
-    conf_meta_70 = generate_file70_from_template(local_tsv, template_path_70, OUT_DIR, log_type_auto, translate_field_no_kw, spt, index_base, filters, field_data, forced_plugin_id=plugin_id_final, out_conf_name=conf70_name_local)
+    conf_meta_70 = generate_file70_from_template(local_tsv, template_path_70, OUT_DIR, log_type_auto, translate_field_no_kw, spt, index_base, index_pattern, filters, field_data, forced_plugin_id=plugin_id_final, out_conf_name=conf70_name_local)
 
     print("\n--- Generating Vector Configuration ---")
     template_path_vector = py_input("Path template Vector (default: {}): ".format(DEFAULT_VECTOR_TEMPLATE_PATH)).strip() or DEFAULT_VECTOR_TEMPLATE_PATH
