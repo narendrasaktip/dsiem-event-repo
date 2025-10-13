@@ -203,18 +203,37 @@ def to_logstash_accessor(s):
 
 def to_vrl_accessor(s):
     """
-    FIXED: Handles VRL access for fields with special characters like dots.
-    'device.ip' -> '.["device.ip"]'
-    'deviceip'  -> '.deviceip'
+    Converts a field path into valid VRL dot/bracket notation.
+    'device.ip' -> '.device.ip'
+    'field-with-dash' -> '.["field-with-dash"]'
+    'nested.field-with-dash' -> '.nested["field-with-dash"]'
     """
     if not s: return "."
     s = s.strip()
-    if s.startswith('.['): 
-        return s
-    if "." in s or "-" in s:
-        return '.["{}"]'.format(s.replace('"', '\\"'))
-    else:
-        return "." + s
+
+    # Split the path by dots to handle nested fields
+    parts = s.split('.')
+    vrl_parts = []
+
+    for part in parts:
+        # A valid VRL identifier for dot notation generally contains letters, numbers, and underscores.
+        # We check for any character that is NOT one of those.
+        if re.search(r'[^a-zA-Z0-9_]', part):
+            # This part contains special characters (like '-') and needs bracket notation.
+            vrl_parts.append('["{}"]'.format(part.replace('"', '\\"')))
+        else:
+            # This is a simple identifier that can be prefixed with a dot.
+            vrl_parts.append("." + part)
+
+    # Join the parts together. A bracketed part doesn't need a preceding dot.
+    result = "".join(vrl_parts)
+
+    # The result might start with a dot (e.g., ".field1"), which is correct.
+    # If it starts with brackets (e.g., '["field-1"]'), it also needs a leading dot.
+    if result.startswith("["):
+        result = "." + result
+    
+    return result
 
 def to_hard_literal(val):
     s = (val or "").strip()
@@ -658,46 +677,59 @@ def deep_diff(base, new):
     return diff
 
 # ====== MAPPING COLLECTION ======
-# ====== MAPPING COLLECTION ======
 def collect_field_mappings(cfg, use_remote_defaults, directive_category=None, full_slug=None):
-    if directive_category: cfg['category_value'] = directive_category
-    if full_slug: cfg['subcategory_value'] = full_slug
-    
     mappings = {}
     print("\n=== Isian Field Mapping (H/F) ===")
 
-    def get_mapping(key, default_field=None, hardcode_default=None):
-        m_default = (cfg.get(key+"_mode") or "").lower()
-        v_default = cfg.get(key+"_value")
-        
-        if (use_remote_defaults or AUTO_USE_CONFIG) and m_default in ("h","f") and v_default is not None:
+    # This function handles the new default logic for specified fields.
+    def get_mapping_with_defaults(key, default_field=None):
+        # Define the special defaults requested by the user
+        special_defaults = {
+            "sensor": {"mode": "f", "value": "resource.labels.project_id"},
+            "product": {"mode": "h", "value": "GCP - Audit"},
+            "src_ips": {"mode": "f", "value": "src_ips"},
+            "dst_ips": {"mode": "f", "value": "dst_ips"},
+            "src_port": {"mode": "f", "value": "src_port"},
+            "dst_port": {"mode": "f", "value": "dst_port"},
+        }
+
+        m_default = (cfg.get(key + "_mode") or "").lower()
+        v_default = cfg.get(key + "_value")
+
+        if (use_remote_defaults or AUTO_USE_CONFIG) and m_default in ("h", "f") and v_default is not None:
             return m_default, v_default
 
-        mode = ask_hf(key, default_mode=(m_default if m_default in ("h","f") else None))
+        # Get the special default for the current key, if it exists
+        key_defaults = special_defaults.get(key)
+        default_mode = key_defaults["mode"] if key_defaults else (m_default if m_default in ("h", "f") else None)
+
+        mode = ask_hf(key, default_mode=default_mode)
+        
         while True:
             placeholder = ""
-            if mode == "f" and default_field:
-                placeholder = " (default: {})".format(default_field)
-            elif mode == "h" and hardcode_default:
-                placeholder = " (default: {})".format(hardcode_default)
+            # Determine the placeholder text based on the mode and available defaults
+            if mode == 'f':
+                default_val = (key_defaults and key_defaults.get("value")) or default_field
+                placeholder = " (default: {})".format(default_val) if default_val else ""
+            elif mode == 'h':
+                default_val = (key_defaults and key_defaults.get("value"))
+                placeholder = " (default: {})".format(default_val) if default_val else ""
 
             val = py_input("{} value{}: ".format(key, placeholder)).strip()
+
+            # If the user just presses Enter, apply the default
+            if not val:
+                if mode == 'f':
+                    val = (key_defaults and key_defaults.get("value")) or default_field
+                elif mode == 'h':
+                    val = (key_defaults and key_defaults.get("value"))
             
-            if mode=="h":
-                if not val and hardcode_default: val = hardcode_default
-                if not val and v_default: val = v_default
-                if not val:
-                    print("Tidak boleh kosong untuk hardcode.")
-                    continue
-                return mode, val
-            else: # mode == 'f'
-                if not val and default_field: val = default_field
-                if not val and v_default: val = v_default
-                if not val:
-                    print("Tidak boleh kosong untuk field.")
-                    continue
-                return mode, val
-    
+            if not val:
+                print("Field/value tidak boleh kosong.")
+                continue
+            
+            return mode, val
+
     fields_to_map = [
         ("sensor", None), ("product", None), ("category", None),
         ("subcategory", "subcategory"), ("src_ips", "src_ips"), ("dst_ips", "dst_ips"),
@@ -705,8 +737,8 @@ def collect_field_mappings(cfg, use_remote_defaults, directive_category=None, fu
     ]
     for key, default in fields_to_map:
         if key == "category":
-            mode, value = get_mapping(key, default_field=default, hardcode_default=directive_category)
-            mappings[key] = {"mode": mode, "value": value}
+            print("[AUTO] Category diisi dari input CATEGORY/TECHNIQUE: {}".format(directive_category))
+            mappings[key] = {"mode": "h", "value": directive_category}
         elif key == "subcategory":
             print("[AUTO] Subcategory diisi dari full_slug: {}".format(full_slug))
             mappings[key] = {"mode": "h", "value": full_slug}
@@ -714,18 +746,27 @@ def collect_field_mappings(cfg, use_remote_defaults, directive_category=None, fu
             print("[AUTO] Protocol diisi otomatis: hardcoded 'TCP'")
             mappings[key] = {"mode": "h", "value": "TCP"}
         else:
-            mode, value = get_mapping(key, default_field=default)
+            # Use the new function with built-in defaults
+            mode, value = get_mapping_with_defaults(key, default_field=default)
             mappings[key] = {"mode": mode, "value": value}
 
 
     print("\n=== Custom Data (label = hardcoded, data = field) ===")
     custom_data = {}
+    # Define the new defaults for custom data
+    custom_defaults = {
+        1: {"label": "Severity", "value": "severity"},
+        2: {"label": "Project ID", "value": "resource.labels.project_id"},
+        3: {"label": "Project Status", "value": "projectstatus"},
+    }
+
     for i in range(1, 4):
         label_key = "custom_label" + str(i)
         data_key = "custom_data" + str(i)
         
-        label_val = cfg.get(label_key)
-        data_val = cfg.get(data_key)
+        # Get remote config value OR the new default
+        label_val = cfg.get(label_key) or custom_defaults[i]["label"]
+        data_val = cfg.get(data_key) or custom_defaults[i]["value"]
         
         if use_remote_defaults or AUTO_USE_CONFIG:
             if not label_val or not data_val:
@@ -733,8 +774,9 @@ def collect_field_mappings(cfg, use_remote_defaults, directive_category=None, fu
             print("[CFG] {} = {}".format(label_key, label_val))
             print("[CFG] {} = {}".format(data_key, data_val))
         else:
-            label_val = py_input("{} (literal, default: {}): ".format(label_key, label_val or 'none')).strip() or label_val
-            data_val = py_input("{} (field, default: {}): ".format(data_key, data_val or 'none')).strip() or data_val
+            # Prompt the user, using the new default if they enter nothing
+            label_val = py_input("{} (literal, default: {}): ".format(label_key, label_val)).strip() or label_val
+            data_val = py_input("{} (field, default: {}): ".format(data_key, data_val)).strip() or data_val
         
         custom_data[label_key] = label_val
         custom_data[data_key] = data_val
@@ -999,11 +1041,63 @@ def build_manual_rules(plugin_id, title, sid):
     return rules
 
 def get_rule_template(template_name="default", plugin_id=None, sid=None, title=""):
+    # Menggunakan OrderedDict untuk menjaga urutan field/key
     templates = {
         "default": [
-            {"stage": 1, "name": title, "plugin_id": plugin_id, "plugin_sid": [sid], "occurrence": 1, "reliability": 1, "timeout": 0, "from": "ANY", "to": "ANY", "port_from": "ANY", "port_to": "ANY", "protocol": "ANY", "type": "PluginRule", "custom_data1": "ANY", "custom_data2": "ANY", "custom_data3": "ANY"},
-            {"stage": 2, "name": title, "plugin_id": plugin_id, "plugin_sid": [sid], "occurrence": 10, "reliability": 10, "timeout": 3600, "from": ":1", "to": "ANY", "port_from": "ANY", "port_to": "ANY", "protocol": "ANY", "type": "PluginRule", "custom_data1": "ANY", "custom_data2": "ANY", "custom_data3": "ANY"},
-            {"stage": 3, "name": title, "plugin_id": plugin_id, "plugin_sid": [sid], "occurrence": 10000, "reliability": 10, "timeout": 21600, "from": ":1", "to": "ANY", "port_from": "ANY", "port_to": "ANY", "protocol": "ANY", "type": "PluginRule", "custom_data1": "ANY", "custom_data2": "ANY", "custom_data3": "ANY"}
+            OrderedDict([
+                ("stage", 1),
+                ("name", title),
+                ("plugin_id", plugin_id),
+                ("plugin_sid", [sid]),
+                ("occurrence", 1),
+                ("reliability", 1),
+                ("timeout", 0),
+                ("from", "ANY"),
+                ("to", "ANY"),
+                ("port_from", "ANY"),
+                ("port_to", "ANY"),
+                ("protocol", "ANY"),
+                ("type", "PluginRule"),
+                ("custom_data1", "ANY"),
+                ("custom_data2", "ANY"),
+                ("custom_data3", "ANY")
+            ]),
+            OrderedDict([
+                ("stage", 2),
+                ("name", title),
+                ("plugin_id", plugin_id),
+                ("plugin_sid", [sid]),
+                ("occurrence", 10),
+                ("reliability", 10),
+                ("timeout", 3600),
+                ("from", ":1"),
+                ("to", "ANY"),
+                ("port_from", "ANY"),
+                ("port_to", "ANY"),
+                ("protocol", "ANY"),
+                ("type", "PluginRule"),
+                ("custom_data1", "ANY"),
+                ("custom_data2", "ANY"),
+                ("custom_data3", "ANY")
+            ]),
+            OrderedDict([
+                ("stage", 3),
+                ("name", title),
+                ("plugin_id", plugin_id),
+                ("plugin_sid", [sid]),
+                ("occurrence", 10000),
+                ("reliability", 10),
+                ("timeout", 21600),
+                ("from", ":1"),
+                ("to", "ANY"),
+                ("port_from", "ANY"),
+                ("port_to", "ANY"),
+                ("protocol", "ANY"),
+                ("type", "PluginRule"),
+                ("custom_data1", "ANY"),
+                ("custom_data2", "ANY"),
+                ("custom_data3", "ANY")
+            ])
         ]
     }
     return templates.get(template_name, templates["default"])
@@ -1379,41 +1473,18 @@ def main():
             print("[SYNC] Up-to-date. Tidak ada penambahan.")
         else:
             print("[SYNC] Tambahan baru: {}".format(len(added)))
-
+    
     local_tsv = os.path.join(OUT_DIR, "{}_plugin-sids.tsv".format(ghp["full_slug"]))
-
+    
     # --- Bagian 4: Generate Artefak Lokal (TSV, .conf, .yaml, directive, etc.) ---
     cfg_remote = {}
-    config_file = None
-
-    # 1. Coba ambil config spesifik
-    print("[CFG] Mencari config spesifik di GitHub -> {}".format(ghp["config"]))
     config_file = gh_get_file(ghp["config"])
-    if config_file:
-        print("[CFG] Config spesifik ditemukan.")
-
-    # 2. Jika tidak ada & ini adalah plugin turunan, coba ambil config parent
-    if not config_file and filter1_slug:
-        parent_dir_parts = [slug(log_type_auto)]
-        if module_slug: parent_dir_parts.append(slug(module_slug))
-        if submodule_slug: parent_dir_parts.append(slug(submodule_slug))
-        parent_path = "/".join(parent_dir_parts) + "/config.json"
-        
-        print("[CFG] Mencari config parent di -> {}".format(parent_path))
-        config_file = gh_get_file(parent_path)
-        if config_file:
-            print("[CFG] Ditemukan! Menggunakan parent config sebagai dasar.")
-
-    # 3. Muat config yang berhasil ditemukan
     if config_file:
         try:
             cfg_remote = json.loads(base64.b64decode(config_file.get("content","")).decode("utf-8","replace"))
-            print("[CFG] config.json berhasil dimuat.")
-        except Exception as e:
-            print("[CFG ERROR] Gagal parse config.json: {}".format(e))
-            cfg_remote = {}
-    else: 
-        print("[CFG] Tidak ada config yang ditemukan (spesifik maupun parent). Lanjut dengan setup manual.")
+            print("[CFG] config.json ditemukan di GitHub.")
+        except Exception: cfg_remote = {}
+    else: print("[CFG] Belum ada config di GitHub.")
 
     directive_cfg_default = cfg_remote.get("directive", {})
     default_category = directive_cfg_default.get("CATEGORY") or "Internal Spearphishing"
@@ -1425,18 +1496,20 @@ def main():
     print("\n[OK] Saved TSV -> {}".format(local_tsv))
     
     print("\n=== GENERATE KONFIGURASI ===")
-    # This is the new line
-    field_data = collect_field_mappings(cfg_remote, use_remote_defaults=(AUTO_USE_CONFIG), directive_category=directive_category, full_slug=ghp["full_slug"])
+    field_data = collect_field_mappings(
+        cfg_remote, 
+        use_remote_defaults=(AUTO_USE_CONFIG), 
+        directive_category=directive_category, 
+        full_slug=ghp["full_slug"]
+    )
 
     print("\n--- Generating Logstash (File 70) Configuration ---")
-    template_path_70 = DEFAULT_TEMPLATE_PATH
-    print("Path template Logstash (otomatis): {}".format(template_path_70))
+    template_path_70 = py_input("Path template Logstash (default: {}): ".format(DEFAULT_TEMPLATE_PATH)).strip() or DEFAULT_TEMPLATE_PATH
     conf70_name_local = "70_dsiem-plugin_{}.conf".format(ghp["full_slug"])
     conf_meta_70 = generate_file70_from_template(local_tsv, template_path_70, OUT_DIR, log_type_auto, translate_field_no_kw, spt, index_base, index_pattern, filters, field_data, forced_plugin_id=plugin_id_final, out_conf_name=conf70_name_local)
 
     print("\n--- Generating Vector Configuration ---")
-    template_path_vector = DEFAULT_VECTOR_TEMPLATE_PATH
-    print("Path template Vector (otomatis): {}".format(template_path_vector))
+    template_path_vector = py_input("Path template Vector (default: {}): ".format(DEFAULT_VECTOR_TEMPLATE_PATH)).strip() or DEFAULT_VECTOR_TEMPLATE_PATH
     vector_conf_name_local = "70_transform_dsiem-plugin-{}.yaml".format(ghp["full_slug"])
     conf_meta_vector = generate_file_vector_from_template(local_tsv, template_path_vector, OUT_DIR, log_type_auto, translate_field_no_kw, spt, filters, field_data, forced_plugin_id=plugin_id_final, out_conf_name=vector_conf_name_local)
     

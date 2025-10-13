@@ -8,6 +8,7 @@ import base64
 import requests
 import shutil
 import subprocess
+import argparse
 
 # ====== KONFIGURASI ENV ======
 GITHUB_REPO   = os.getenv("GITHUB_REPO")
@@ -16,63 +17,98 @@ GITHUB_BRANCH = os.getenv("GITHUB_BRANCH")
 OUT_DIR = os.getenv("OUT_DIR", "./pulled_configs")
 
 # ====== KONFIGURASI DISTRIBUSI & RESTART ======
-# --- Logstash ---
 LOGSTASH_PIPE_DIR = "/root/kubeappl/logstash/configs/pipelines/dsiem-events/"
 LOGSTASH_JSON_DICT_DIR = "/root/kubeappl/logstash/configs/pipelines/dsiem-events/dsiem-plugin-json/"
 LOGSTASH_HOME     = "/root/kubeappl/logstash/"
-# --- Vector ---
 VECTOR_CONFIG_BASE_DIR = "/root/data/mgmt/kubeappl/vector-parser/configs/"
 NFS_BASE_DIR           = "/root/data/nfs/"
-# --- Kubernetes ---
 FRONTEND_POD      = "dsiem-frontend-0"
 BACKEND_POD       = "dsiem-backend-0"
 VECTOR_POD_LABEL  = "app=vector-parser"
 
+# Konstanta untuk navigasi
+LAST_SELECTION_FILE = "last_selection.json"
+BACK_COMMAND = "__BACK__"
+DRY_RUN = False
 
-# ====== I/O & HELPERS ======
-def save_json_utf8(path, obj):
-    """
-    Python2/3-safe JSON writer: dumps dengan ensure_ascii=False dan writes unicode.
-    """
-    import io as _io
-    import json as _json
-    data = _json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)
+# ====== I/O & HELPERS (Dengan Dukungan Dry Run & Navigasi) ======
+def print_header(title):
+    print("\n" + "="*60)
+    print("=== {}".format(title.upper()))
+    print("="*60)
+
+def safe_save_json(path, obj):
+    print("[FILE] Menyiapkan untuk menyimpan: {}".format(path))
+    if DRY_RUN:
+        print("    -> [DRY RUN] Penulisan file dilewati.")
+        return
     try:
-        unicode  # noqa: F821 (py3 ignores)
-        if isinstance(data, str):
-            data = data.decode("utf-8")
-    except NameError:
-        pass
-    with _io.open(path, "w", encoding="utf-8") as f:
-        f.write(data + "\n")
+        with open(path, 'w') as f:
+            json.dump(obj, f, indent=2, sort_keys=True)
+            f.write("\n")
+        print("    -> [OK] Berhasil disimpan.")
+    except Exception as e:
+        print("    -> [ERROR] Gagal menyimpan file: {}".format(e))
 
-def py_input(p):
+def safe_copy(src, dst_dir_or_file):
+    print("[FILE] Menyiapkan untuk menyalin '{}' ke '{}'".format(src, dst_dir_or_file))
+    if DRY_RUN:
+        print("    -> [DRY RUN] Penyalinan dilewati.")
+        return
     try:
-        return raw_input(p)
-    except NameError:
-        return input(p)
+        shutil.copy(src, dst_dir_or_file)
+        print("    -> [OK] Berhasil disalin.")
+    except Exception as e:
+        print("    -> [ERROR] Gagal menyalin: {}".format(e))
 
-def ask_yes_no(p):
-    while True:
-        a = py_input(p).strip().lower()
-        if a in ("y", "n"): return a
-        print("Ketik 'y' atau 'n'.")
+def safe_makedirs(path):
+    if os.path.exists(path): return
+    print("[FILE] Menyiapkan untuk membuat direktori: {}".format(path))
+    if DRY_RUN:
+        print("    -> [DRY RUN] Pembuatan direktori dilewati.")
+        return
+    try:
+        os.makedirs(path)
+        print("    -> [OK] Direktori berhasil dibuat.")
+    except Exception as e:
+        print("    -> [ERROR] Gagal membuat direktori: {}".format(e))
 
-def run_cmd(cmd, cwd=None, shell=False):
-    print("\n[CMD] Menjalankan: {}".format(" ".join(cmd)))
+def safe_run_cmd(cmd, cwd=None, shell=False):
+    cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+    print("\n[CMD] Menyiapkan untuk menjalankan: {}".format(cmd_str))
+    if DRY_RUN:
+        print("    -> [DRY RUN] Eksekusi perintah dilewati.")
+        return True
     try:
         p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=shell)
         out, err = p.communicate()
-        if out:
-            print(out.decode('utf-8', 'replace'))
-        if err:
-            print("--- stderr ---\n{}".format(err.decode('utf-8', 'replace')))
+        if out: print(out.decode('utf-8', 'replace'))
+        if err: print("--- stderr ---\n{}".format(err.decode('utf-8', 'replace')))
         return p.returncode == 0
     except OSError as e:
         print("[ERROR] Gagal menjalankan perintah: {}".format(e))
         return False
 
-# ====== FUNGSI INTI GITHUB ======
+def py_input(p):
+    try: return raw_input(p)
+    except NameError: return input(p)
+
+def ask_yes_no(p, allow_back=False):
+    prompt = p
+    if allow_back: prompt += " (y/n/b untuk kembali): "
+    else: prompt += " (y/n): "
+    
+    while True:
+        a = py_input(prompt).strip().lower()
+        valid_options = ("y", "n")
+        if allow_back: valid_options += ("b",)
+        
+        if a in valid_options:
+            if a == 'b': return BACK_COMMAND
+            return a
+        print("Pilihan tidak valid.")
+
+# ====== FUNGSI GITHUB ======
 def require_github():
     if not GITHUB_REPO or not GITHUB_TOKEN:
         raise SystemExit("[GITHUB] Set GITHUB_REPO='owner/repo' dan GITHUB_TOKEN='ghp_xxx' dulu ya.")
@@ -88,127 +124,182 @@ def gh_api_get(path):
     url = "https://api.github.com/repos/{}/contents/{}".format(GITHUB_REPO, path)
     try:
         r = requests.get(url, headers=gh_headers(), params={"ref": GITHUB_BRANCH}, timeout=60)
-        if r.status_code == 404:
-            return None
+        if r.status_code == 404: return None
         r.raise_for_status()
         return r.json()
     except requests.exceptions.RequestException as e:
         print("\n[ERROR] Gagal menghubungi GitHub API: {}".format(e))
         return None
 
-def find_plugins_recursively(path=""):
-    found_plugins = []
-    items = gh_api_get(path)
+def find_parent_devices():
+    print("[INFO] Mencari perangkat induk di repositori...")
+    items = gh_api_get("")
     if not isinstance(items, list):
+        print("[ERROR] Gagal mendapatkan daftar dari root repositori.")
         return []
+    devices = sorted([item['name'] for item in items if item['type'] == 'dir' and not item['name'].startswith('.')])
+    print("[INFO] Ditemukan {} perangkat induk.".format(len(devices)))
+    return devices
 
-    has_config = any(item.get('type') == 'file' and item.get('name') == 'config.json' for item in items)
-    has_subdirs = any(item.get('type') == 'dir' for item in items)
+def find_plugins_in_parent(parent_path, current_path=""):
+    full_path = os.path.join(parent_path, current_path).replace("\\", "/")
+    items = gh_api_get(full_path)
+    if not isinstance(items, list): return []
     
-    if has_config and not has_subdirs and path:
-        found_plugins.append(path)
+    found_plugins = []
+    has_config = any(item.get('name') == 'config.json' for item in items)
+    has_subdirs = any(item.get('type') == 'dir' for item in items)
+
+    if has_config and not has_subdirs:
+        found_plugins.append(full_path)
 
     for item in items:
         if item.get('type') == 'dir':
-            deeper_plugins = find_plugins_recursively(item.get('path', ''))
-            if deeper_plugins:
-                found_plugins.extend(deeper_plugins)
-    
+            new_path = os.path.join(current_path, item['name']).replace("\\", "/")
+            found_plugins.extend(find_plugins_in_parent(parent_path, new_path))
+            
     return found_plugins
 
-def display_and_select_plugins(all_plugins):
-    """Menampilkan menu dan mengizinkan pengguna memilih satu, lebih dari satu, atau rentang plugin."""
-    print("\nSilakan pilih plugin yang akan diunduh:")
-    for i, plugin_path in enumerate(all_plugins, 1):
-        print("{}. {}".format(i, plugin_path))
+def download_and_save(remote_path, local_path):
+    print("\n[*] Mencoba mengunduh: {}".format(remote_path))
+    file_meta = gh_api_get(remote_path)
+    if file_meta is None:
+        print("    -> [INFO] File tidak ditemukan, dilewati.")
+        return None, None
+    try:
+        content_b64 = file_meta.get("content", "")
+        content_bytes = base64.b64decode(content_b64)
+        local_dir = os.path.dirname(local_path)
+        safe_makedirs(local_dir)
+        
+        print("    -> [FILE] Menyiapkan untuk menyimpan: {}".format(local_path))
+        if not DRY_RUN:
+            with open(local_path, "wb") as f:
+                f.write(content_bytes)
+        else:
+            print("    -> [DRY RUN] Penulisan file dilewati.")
+        
+        full_slug = None
+        if remote_path.endswith('_plugin-sids.tsv'):
+            full_slug = os.path.basename(remote_path).replace('_plugin-sids.tsv', '')
+        return local_path, full_slug
+    except Exception as e:
+        print("    -> [ERROR] Gagal memproses file: {}".format(e))
+        return None, None
+
+# ====== FUNGSI ALUR BARU (NEW FLOW) ======
+def select_from_list(options, title, can_go_back=False):
+    print_header(title)
+    offset = 0
+    if can_go_back:
+        print("0. Kembali ke langkah sebelumnya")
+        offset = 1
     
-    selected_paths = []
-    while not selected_paths:
-        prompt = "\nMasukkan nomor pilihan (cth: 1, 3, 7, 11-30): "
-        choice_str = py_input(prompt).strip()
-        if not choice_str:
-            continue
-            
-        all_indices = []
-        is_all_valid = True
-        
-        # Pertama, pisahkan berdasarkan koma untuk mendapatkan setiap input
-        tokens = choice_str.split(',')
-        
-        for token in tokens:
-            token = token.strip()
-            if not token: continue
+    for i, option in enumerate(options, 1):
+        print("{}. {}".format(i, option))
+    
+    while True:
+        prompt = "Pilihan Anda: "
+        choice = py_input(prompt).strip()
+        if can_go_back and choice == '0': return BACK_COMMAND
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            return options[int(choice) - 1]
+        print("[ERROR] Pilihan tidak valid.")
 
-            # Kedua, periksa apakah token adalah sebuah rentang (mengandung '-')
-            if '-' in token:
+def select_plugins_from_list(available_plugins):
+    print_header("Pilih Plugin Spesifik")
+    for i, plugin in enumerate(available_plugins, 1):
+        print("{}. {}".format(i, plugin))
+
+    while True:
+        choice_str = py_input("\nMasukkan nomor pilihan (cth: 1, 3, 5-7) atau ketik 'b' untuk kembali: ").strip().lower()
+        if choice_str == 'b': return BACK_COMMAND
+        if not choice_str: continue
+        
+        selected_indices = set()
+        valid = True
+        for part in choice_str.split(','):
+            part = part.strip()
+            if not part: continue
+            if '-' in part:
                 try:
-                    parts = token.split('-')
-                    if len(parts) != 2:
-                        raise ValueError("Format rentang tidak valid.")
-                    
-                    start = int(parts[0].strip())
-                    end = int(parts[1].strip())
-                    
-                    if start > end:
-                        print("[ERROR] Angka awal rentang '{}' harus lebih kecil dari angka akhir '{}'.".format(start, end))
-                        is_all_valid = False
-                        break
-                        
-                    if not (1 <= start <= len(all_plugins) and 1 <= end <= len(all_plugins)):
-                        print("[ERROR] Rentang '{}' berada di luar pilihan valid (1-{}).".format(token, len(all_plugins)))
-                        is_all_valid = False
-                        break
-                        
-                    # Tambahkan semua nomor dalam rentang ke daftar (ubah ke indeks 0-based)
-                    for i in range(start, end + 1):
-                        all_indices.append(i - 1)
-                        
+                    start, end = map(int, part.split('-'))
+                    if start > end or not (1 <= start <= len(available_plugins) and 1 <= end <= len(available_plugins)):
+                        raise ValueError
+                    selected_indices.update(range(start - 1, end))
                 except ValueError:
-                    print("[ERROR] Format rentang '{}' tidak valid. Gunakan format angka-angka (cth: 11-30).".format(token))
-                    is_all_valid = False
-                    break
+                    print("[ERROR] Rentang '{}' tidak valid.".format(part))
+                    valid = False; break
             else:
-                # Jika bukan rentang, proses sebagai angka tunggal
                 try:
-                    index = int(token) - 1 # Ubah ke indeks 0-based
-                    if 0 <= index < len(all_plugins):
-                        all_indices.append(index)
-                    else:
-                        print("[ERROR] Nomor '{}' tidak ada di dalam pilihan.".format(token))
-                        is_all_valid = False
-                        break
+                    idx = int(part) - 1
+                    if not (0 <= idx < len(available_plugins)): raise ValueError
+                    selected_indices.add(idx)
                 except ValueError:
-                    print("[ERROR] Input '{}' bukan angka yang valid.".format(token))
-                    is_all_valid = False
-                    break
+                    print("[ERROR] Pilihan '{}' tidak valid.".format(part))
+                    valid = False; break
         
-        # Jika ada satu saja token yang tidak valid, ulangi proses input
-        if not is_all_valid:
-            continue
+        if valid:
+            return sorted([available_plugins[i] for i in selected_indices])
 
-        # Jika semua valid, proses dan kembalikan hasilnya
-        if all_indices:
-            # Gunakan set untuk menghilangkan duplikat dan urutkan
-            unique_indices = sorted(list(set(all_indices)))
-            selected_paths = [all_plugins[i] for i in unique_indices]
-            return selected_paths
+def select_active_notifications(plugins_to_process):
+    print_header("Aktivasi Notifikasi (Mode 'Full')")
+    print("Pilih plugin mana yang ingin diaktifkan notifikasi email-nya.")
+    print("Plugin yang tidak dipilih akan tetap di-pull (mode 'pasif').\n")
+    for i, plugin in enumerate(plugins_to_process, 1):
+        print("{}. {}".format(i, plugin))
+    
+    print("\nPilihan:")
+    print("- Masukkan nomor untuk mengaktifkan (cth: 1, 3, 5-7)")
+    print("- Ketik 'A' untuk mengaktifkan SEMUA")
+    print("- Ketik 'b' untuk kembali ke langkah sebelumnya")
+    print("- Tekan Enter untuk tidak mengaktifkan satupun")
 
-# Ganti fungsi process_single_plugin() Anda dengan ini
-def process_single_plugin(selected_path, dist_choice, is_explicit_choice):
-    """
-    Menjalankan seluruh proses untuk satu plugin.
-    Parameter 'is_explicit_choice' menentukan apakah plugin ini akan diaktifkan.
-    """
-    print("\n" + "="*50)
-    print("=== Memproses Plugin: {} ===".format(selected_path))
-    if is_explicit_choice:
-        print("=== Mode: Aktif (Pilihan Pengguna) ===")
-    else:
-        print("=== Mode: Pasif (Sinkronisasi Repositori) ===")
-    print("="*50)
+    while True:
+        choice_str = py_input("\nPlugin yang akan diaktifkan notifikasinya: ").strip().lower()
+        if not choice_str: return []
+        if choice_str == 'b': return BACK_COMMAND
+        if choice_str == 'a': return plugins_to_process
+        
+        selected_indices = set()
+        valid = True
+        for part in choice_str.split(','):
+            part = part.strip()
+            if not part: continue
+            if '-' in part:
+                try:
+                    start, end = map(int, part.split('-'))
+                    if start > end or not (1 <= start <= len(plugins_to_process) and 1 <= end <= len(plugins_to_process)): raise ValueError
+                    selected_indices.update(range(start - 1, end))
+                except ValueError:
+                    print("[ERROR] Rentang '{}' tidak valid.".format(part)); valid = False; break
+            else:
+                try:
+                    idx = int(part) - 1
+                    if not (0 <= idx < len(plugins_to_process)): raise ValueError
+                    selected_indices.add(idx)
+                except ValueError:
+                    print("[ERROR] Pilihan '{}' tidak valid.".format(part)); valid = False; break
+        if valid: return sorted([plugins_to_process[i] for i in selected_indices])
 
-    # 1. Analisis direktori dan tentukan full_slug
-    dir_contents = gh_api_get(selected_path)
+def display_summary(selection):
+    print_header("Ringkasan Pekerjaan")
+    if 'parent' in selection: print("Perangkat Induk      : {}".format(selection['parent']))
+    if 'scope' in selection: print("Cakupan              : {}".format(selection['scope']))
+    if 'action' in selection: print("Aksi Utama           : {}".format(selection['action']))
+    if 'active_plugins' in selection:
+        active_count = len(selection['active_plugins'])
+        total_count = len(selection['plugins_to_process'])
+        print("Plugin Aktif (Notif) : {} dari {} plugin dipilih".format(active_count, total_count))
+        if active_count > 0:
+            for plugin in selection['active_plugins']:
+                print("    - {}".format(plugin))
+    print("="*60)
+
+# ====== FUNGSI PROSES & DISTRIBUSI ======
+def process_plugin(plugin_path):
+    print_header("Mengunduh Plugin: {}".format(plugin_path))
+    dir_contents = gh_api_get(plugin_path)
     full_slug = None
     if dir_contents:
         for item in dir_contents:
@@ -216,14 +307,11 @@ def process_single_plugin(selected_path, dist_choice, is_explicit_choice):
                 full_slug = item['name'].replace('_plugin-sids.tsv', '')
                 break
     if not full_slug:
-        print("[ERROR] Tidak dapat menentukan 'full_slug' dari direktori {}. Plugin dilewati.".format(selected_path))
-        return False
-
+        print("[ERROR] Gagal menentukan 'full_slug' untuk {}. Dilewati.".format(plugin_path))
+        return None
     print("[INFO] Ditemukan 'full_slug': {}".format(full_slug))
-    local_plugin_dir = os.path.join(OUT_DIR, selected_path)
-
-    # 2. Rekonstruksi path dan unduh semua file terkait
-    paths = {
+    local_plugin_dir = os.path.join(OUT_DIR, plugin_path)
+    paths_to_download = {
         "conf70":      "70_dsiem-plugin_{}.conf".format(full_slug),
         "vector_conf": "70_transform_dsiem-plugin-{}.yaml".format(full_slug),
         "tsv":         "{}_plugin-sids.tsv".format(full_slug),
@@ -231,359 +319,185 @@ def process_single_plugin(selected_path, dist_choice, is_explicit_choice):
         "json_dict":   "{}_plugin-sids.json".format(full_slug),
         "updater_cfg": "{}_updater.json".format(full_slug),
     }
-
-    local_files = {}
-    success_count = 0
-    print("\n[*] Memulai proses unduh untuk {}...".format(full_slug))
-    for key, filename in paths.items():
-        remote_path = "{}/{}".format(selected_path, filename)
+    downloaded_files = {"full_slug": full_slug, "path": plugin_path}
+    for key, filename in paths_to_download.items():
+        remote_path = os.path.join(plugin_path, filename).replace("\\", "/")
         local_path = os.path.join(local_plugin_dir, filename)
-        local_files[key] = local_path
-        if download_and_save(remote_path, local_path):
-            success_count += 1
-    
-    if success_count == 0:
-        print("[WARN] Tidak ada file yang berhasil diunduh untuk {}. Plugin dilewati.".format(full_slug))
-        return False
+        saved_path, _ = download_and_save(remote_path, local_path)
+        if saved_path:
+            downloaded_files[key] = saved_path
+    return downloaded_files
 
-    print("\n[*] Proses unduh untuk {} selesai. Berhasil {} file.".format(full_slug, success_count))
-
-    # 3. Distribusi, Registrasi, dan Aktivasi SELEKTIF
-    if dist_choice == '1':
-        # Distribusi hanya dijalankan jika plugin dipilih secara eksplisit
-        if is_explicit_choice:
-            print("[INFO] Plugin ini aktif, menjalankan distribusi Logstash...")
-            distribute_logstash(local_files["conf70"], local_files["directive"], local_files["json_dict"])
-        else:
-            print("[INFO] Melewatkan distribusi Logstash untuk plugin pasif.")
-    elif dist_choice == '2':
-        # Sama untuk Vector
-        if is_explicit_choice:
-            print("[INFO] Plugin ini aktif, menjalankan distribusi Vector...")
-            master_folder = selected_path.split('/')[0]
-            distribute_vector(local_files["vector_conf"], local_files["tsv"], master_folder)
-        else:
-            print("[INFO] Melewatkan distribusi Vector untuk plugin pasif.")
-    
-    # Registrasi pekerjaan SELALU dijalankan untuk semua plugin terkait
-    register_pulled_job(local_files["updater_cfg"])
-    
-    # Aktivasi HANYA dijalankan jika plugin dipilih secara eksplisit
-    if is_explicit_choice:
-        activate_plugin(full_slug)
-    
-    return True
-
-def download_and_save(remote_path, local_path):
-    print("\n[*] Mencoba mengunduh: {}".format(remote_path))
-    file_meta = gh_api_get(remote_path)
-
-    if file_meta is None:
-        print("    -> [INFO] File tidak ditemukan, dilewati.")
-        return False
-
-    try:
-        content_b64 = file_meta.get("content", "")
-        content_bytes = base64.b64decode(content_b64)
-        
-        local_dir = os.path.dirname(local_path)
-        if not os.path.exists(local_dir):
-            os.makedirs(local_dir)
-        
-        with open(local_path, "wb") as f:
-            f.write(content_bytes)
-            
-        print("    -> [OK] Disimpan di: {}".format(local_path))
-        return True
-    except Exception as e:
-        print("    -> [ERROR] Gagal menyimpan file: {}".format(e))
-        return False
-
-# ====== FUNGSI DISTRIBUSI & RESTART ======
-def distribute_logstash(conf70_path, directive_path, json_dict_path):
-    print("\n--- Memulai Distribusi untuk Logstash ---")
-    # 1. Salin file .conf ke Logstash
-    if os.path.exists(conf70_path):
-        print("[DIST] Menyalin {} ke {}".format(conf70_path, LOGSTASH_PIPE_DIR))
-        try:
-            shutil.copy(conf70_path, LOGSTASH_PIPE_DIR)
-            print("    -> [OK] Berhasil disalin.")
-        except Exception as e:
-            print("    -> [ERROR] Gagal menyalin: {}".format(e))
-    else:
-        print("[WARN] File .conf tidak ditemukan di {}, dilewati.".format(conf70_path))
-
-    # 2. Salin file kamus .json ke direktori spesifik
-    if os.path.exists(json_dict_path):
-        # Gunakan variabel path yang baru
-        print("[DIST] Menyalin {} ke {}".format(json_dict_path, LOGSTASH_JSON_DICT_DIR))
-        try:
-            # Pastikan direktori tujuan ada
-            if not os.path.isdir(LOGSTASH_JSON_DICT_DIR):
-                print("    -> [INFO] Direktori {} tidak ditemukan, membuat direktori...".format(LOGSTASH_JSON_DICT_DIR))
-                os.makedirs(LOGSTASH_JSON_DICT_DIR)
-            
-            shutil.copy(json_dict_path, LOGSTASH_JSON_DICT_DIR)
-            print("    -> [OK] Berhasil disalin.")
-        except Exception as e:
-            print("    -> [ERROR] Gagal menyalin file JSON: {}".format(e))
-    else:
-        print("[WARN] File kamus .json tidak ditemukan di {}, dilewati.".format(json_dict_path))
-        
-    # 3. Salin file directive ke pod frontend
-    if os.path.exists(directive_path):
+def distribute_logstash(downloaded_files):
+    print_header("Distribusi ke Logstash untuk: {}".format(downloaded_files['path']))
+    if "conf70" in downloaded_files: safe_copy(downloaded_files["conf70"], LOGSTASH_PIPE_DIR)
+    if "json_dict" in downloaded_files:
+        safe_makedirs(LOGSTASH_JSON_DICT_DIR)
+        safe_copy(downloaded_files["json_dict"], LOGSTASH_JSON_DICT_DIR)
+    if "directive" in downloaded_files:
         target_path = "{}:/dsiem/configs/".format(FRONTEND_POD)
-        print("[DIST] Menyalin {} ke pod {} ({})".format(directive_path, FRONTEND_POD, target_path))
-        if not run_cmd(["kubectl", "cp", directive_path, target_path]):
-            print("    -> [ERROR] Gagal menjalankan kubectl cp.")
-    else:
-        print("[WARN] File directive tidak ditemukan di {}, dilewati.".format(directive_path))
-        
-def restart_logstash_stack():
-    if ask_yes_no("\nRestart Logstash & Dsiem pods sekarang? (y/n): ") == 'y':
-        print("\n--- Memulai Proses Restart ---")
-        run_cmd(["./update-config-map.sh"], cwd=LOGSTASH_HOME, shell=True)
-        run_cmd(["./restart-logstash.sh"], cwd=LOGSTASH_HOME, shell=True)
-        run_cmd(["kubectl", "delete", "pod", BACKEND_POD, FRONTEND_POD])
-        print("\n[INFO] Perintah restart telah dikirim.")
-    else:
-        print("[INFO] Proses restart dibatalkan.")
+        safe_run_cmd(["kubectl", "cp", downloaded_files["directive"], target_path])
 
-def register_pulled_job(downloaded_updater_path):
-    """
-    Menyalin file updater yang sudah diunduh ke folder 'updaters' 
-    dan mendaftarkannya ke master_jobs.json.
-    """
-    print("\n--- Mendaftarkan Pekerjaan Auto-Update yang Diunduh ---")
-
-    if not os.path.exists(downloaded_updater_path):
-        print("[WARN] File updater '{}' tidak ditemukan setelah diunduh. Pendaftaran dilewati.".format(downloaded_updater_path))
-        return
-
-    updaters_dir = "updaters"
-    if not os.path.exists(updaters_dir):
-        os.makedirs(updaters_dir)
-        
-    # Salin file dari folder 'pulled_configs' ke folder 'updaters' yang lebih rapi
-    final_config_path = os.path.join(updaters_dir, os.path.basename(downloaded_updater_path))
-    try:
-        shutil.copy(downloaded_updater_path, final_config_path)
-        print("[REG] Menyalin config updater ke: {}".format(final_config_path))
-    except Exception as e:
-        print("[ERROR] Gagal menyalin config updater: {}".format(e))
-        return
-
-    # Daftarkan path final ke master_jobs.json
-    jobs_file = 'master_jobs.json'
-    jobs = []
-    if os.path.exists(jobs_file):
-        with open(jobs_file, 'r') as f:
-            try:
-                jobs = json.load(f)
-            except json.JSONDecodeError:
-                print("[WARN] Gagal membaca '{}', akan membuat file baru.".format(jobs_file))
-    
-    if final_config_path not in jobs:
-        print("[REG] Menambahkan '{}' ke daftar pekerjaan master.".format(final_config_path))
-        jobs.append(final_config_path)
-        with open(jobs_file, 'w') as f:
-            json.dump(jobs, f, indent=2)
-        print("    -> [OK] Berhasil didaftarkan.")
-    else:
-        print("[REG] Pekerjaan untuk '{}' sudah terdaftar.".format(final_config_path))
-
-def distribute_vector(vector_conf_path, tsv_path, master_folder):
-    print("\n--- Memulai Distribusi untuk Vector ---")
-    # 1. Salin file .yaml ke folder Vector
-    if os.path.exists(vector_conf_path):
-        vector_target_dir = os.path.join(VECTOR_CONFIG_BASE_DIR, master_folder)
-        print("[DIST] Menyalin {} ke {}".format(vector_conf_path, vector_target_dir))
-        if not os.path.isdir(vector_target_dir):
-            print("    -> [WARN] Direktori tujuan {} tidak ada. Membuat direktori...".format(vector_target_dir))
-            try:
-                os.makedirs(vector_target_dir)
-            except Exception as e:
-                print("    -> [ERROR] Gagal membuat direktori: {}".format(e))
-        try:
-            shutil.copy(vector_conf_path, vector_target_dir)
-            print("    -> [OK] Berhasil disalin.")
-        except Exception as e:
-            print("    -> [ERROR] Gagal menyalin file YAML: {}".format(e))
-    else:
-        print("[WARN] File Vector .yaml tidak ditemukan di {}, dilewati.".format(vector_conf_path))
-        
-    # 2. Cari dan salin file .tsv ke NFS
-    if os.path.exists(tsv_path):
+def distribute_vector(downloaded_files, parent):
+    print_header("Distribusi ke Vector untuk: {}".format(downloaded_files['path']))
+    if "vector_conf" in downloaded_files:
+        vector_target_dir = os.path.join(VECTOR_CONFIG_BASE_DIR, parent)
+        safe_makedirs(vector_target_dir)
+        safe_copy(downloaded_files["vector_conf"], vector_target_dir)
+    if "tsv" in downloaded_files:
         print("[DIST] Mencari direktori dsiem-plugin-tsv di {}...".format(NFS_BASE_DIR))
-        nfs_target_dir = None
+        if not DRY_RUN:
+            nfs_target_dir = None
+            try:
+                for item in os.listdir(NFS_BASE_DIR):
+                    item_path = os.path.join(NFS_BASE_DIR, item)
+                    if os.path.isdir(item_path) and item.startswith("pvc-"):
+                        potential_target = os.path.join(item_path, "dsiem-plugin-tsv")
+                        if os.path.isdir(potential_target): nfs_target_dir = potential_target; break
+            except Exception as e: print("    -> [ERROR] Gagal mencari direktori NFS: {}".format(e))
+            if nfs_target_dir: safe_copy(downloaded_files["tsv"], nfs_target_dir)
+            else: print("    -> [ERROR] Direktori 'dsiem-plugin-tsv' tidak ditemukan di NFS.")
+        else: print("    -> [DRY RUN] Pencarian dan penyalinan NFS dilewati.")
+
+def register_job(updater_path):
+    if not updater_path or not os.path.exists(updater_path): return
+    print("[REG] Mendaftarkan pekerjaan: {}".format(updater_path))
+    updaters_dir = "updaters"; safe_makedirs(updaters_dir)
+    final_config_path = os.path.join(updaters_dir, os.path.basename(updater_path))
+    safe_copy(updater_path, final_config_path)
+    jobs_file = 'master_jobs.json'; jobs = []
+    if os.path.exists(jobs_file):
         try:
-            for item in os.listdir(NFS_BASE_DIR):
-                item_path = os.path.join(NFS_BASE_DIR, item)
-                if os.path.isdir(item_path) and item.startswith("pvc-"):
-                    potential_target = os.path.join(item_path, "dsiem-plugin-tsv")
-                    if os.path.isdir(potential_target):
-                        nfs_target_dir = potential_target
-                        break
-        except Exception as e:
-            print("    -> [ERROR] Gagal mencari direktori NFS: {}".format(e))
+            with open(jobs_file, 'r') as f: jobs = json.load(f)
+        except json.JSONDecodeError: pass
+    if final_config_path not in jobs:
+        jobs.append(final_config_path); safe_save_json(jobs_file, sorted(jobs))
+    else: print("[REG] Pekerjaan sudah terdaftar.")
 
-        if nfs_target_dir:
-            print("[DIST] Direktori ditemukan: {}. Menyalin file TSV...".format(nfs_target_dir))
-            try:
-                shutil.copy(tsv_path, nfs_target_dir)
-                print("    -> [OK] Berhasil disalin.")
-            except Exception as e:
-                print("    -> [ERROR] Gagal menyalin file TSV: {}".format(e))
-        else:
-            print("    -> [ERROR] Direktori 'dsiem-plugin-tsv' tidak ditemukan di dalam folder pvc-* manapun.")
-    else:
-        print("[WARN] File TSV tidak ditemukan di {}, dilewati.".format(tsv_path))
-        
-def restart_vector_stack():
-    if ask_yes_no("\nRestart Vector & Dsiem pods sekarang? (y/n): ") == 'y':
-        print("\n--- Memulai Proses Restart ---")
-        run_cmd(["kubectl", "delete", "pod", "-l", VECTOR_POD_LABEL])
-        run_cmd(["kubectl", "delete", "pod", BACKEND_POD, FRONTEND_POD])
-        print("\n[INFO] Perintah restart telah dikirim.")
-    else:
-        print("[INFO] Proses restart dibatalkan.")
+def activate_plugin_notification(slug_to_activate, all_active_slugs):
+    if slug_to_activate not in all_active_slugs:
+        all_active_slugs.append(slug_to_activate)
 
-def activate_plugin(full_slug):
-    """Menambahkan full_slug ke daftar plugin aktif di active_plugins.json."""
-    activation_file = 'active_plugins.json'
-    active_list = []
+def restart_stack(action):
+    if "Logstash" in action:
+        if ask_yes_no("\nRestart Logstash & Dsiem pods sekarang?") == 'y':
+            print_header("Memulai Proses Restart Logstash")
+            safe_run_cmd(["./update-config-map.sh"], cwd=LOGSTASH_HOME, shell=True)
+            safe_run_cmd(["./restart-logstash.sh"], cwd=LOGSTASH_HOME, shell=True)
+            safe_run_cmd(["kubectl", "delete", "pod", BACKEND_POD, FRONTEND_POD])
+    elif "Vector" in action:
+        if ask_yes_no("\nRestart Vector & Dsiem pods sekarang?") == 'y':
+            print_header("Memulai Proses Restart Vector")
+            safe_run_cmd(["kubectl", "delete", "pod", "-l", VECTOR_POD_LABEL])
+            safe_run_cmd(["kubectl", "delete", "pod", BACKEND_POD, FRONTEND_POD])
 
-    # Baca daftar yang sudah ada
-    if os.path.exists(activation_file):
-        with open(activation_file, 'r') as f:
-            try:
-                active_list = json.load(f)
-            except json.JSONDecodeError:
-                print("[WARN] Gagal membaca '{}', akan membuat file baru.".format(activation_file))
-
-    # Tambahkan slug baru jika belum ada
-    if full_slug not in active_list:
-        print("[ACTIVATE] Mengaktifkan mode 'full' untuk plugin: {}".format(full_slug))
-        active_list.append(full_slug)
-
-        # Tulis kembali ke file
-        with open(activation_file, 'w') as f:
-            json.dump(sorted(active_list), f, indent=2)
-    else:
-        print("[ACTIVATE] Plugin '{}' sudah dalam mode 'full'.".format(full_slug))
-
-# ====== FUNGSI MAIN ======
+# ====== FUNGSI MAIN (STATE MACHINE) ======
 def main():
-    # --- Blok BARU untuk manajemen nama customer ---
-    customer_file = "customer.json"
-    current_name = ""
-    needs_update = False
+    global DRY_RUN
+    parser = argparse.ArgumentParser(description="Skrip untuk mengunduh dan mendistribusikan konfigurasi plugin.")
+    parser.add_argument("--dry-run", action="store_true", help="Jalankan skrip dalam mode simulasi.")
+    args = parser.parse_args(); DRY_RUN = args.dry_run
+    if DRY_RUN:
+        print("\n" + "#"*60 + "\n### MODE DRY RUN AKTIF. TIDAK ADA PERUBAHAN YANG AKAN DIBUAT. ###\n" + "#"*60)
 
-    # 1. Cek file customer.json
-    if os.path.exists(customer_file):
-        try:
-            with open(customer_file, 'r') as f:
-                data = json.load(f)
-                current_name = data.get("customer_info", {}).get("customer_name", "").strip()
-        except (IOError, json.JSONDecodeError):
-            print("[WARN] Gagal membaca file customer.json. Anda akan diminta untuk mengaturnya.")
-            needs_update = True
-    else:
-        # File tidak ada, ini adalah setup pertama kali.
-        needs_update = True
+    print_header("Skrip Pull & Distribusi Konfigurasi"); require_github()
+    
+    selection = {}
+    if os.path.exists(LAST_SELECTION_FILE):
+        if ask_yes_no("Ditemukan sesi terakhir. Lanjutkan?") == 'y':
+            try:
+                with open(LAST_SELECTION_FILE, 'r') as f: selection = json.load(f)
+            except Exception as e:
+                print("[WARN] Gagal memuat sesi: {}. Memulai sesi baru.".format(e)); selection = {}
 
-    # 2. Periksa apakah nama customer adalah placeholder default atau kosong.
-    if not current_name or current_name == "Nama Customer Anda":
-        needs_update = True
-    
-    # 3. Minta input HANYA jika diperlukan.
-    if needs_update:
-        print("\n" + "="*50)
-        print("=== SETUP NAMA CUSTOMER ===")
-        print("Nama customer untuk instalasi ini belum diatur dengan benar.")
-        
-        new_name = ""
-        while not new_name or new_name == "Nama Customer Anda":
-            new_name = py_input("Harap masukkan nama customer yang valid: ").strip()
-            if not new_name:
-                print("[ERROR] Nama customer tidak boleh kosong.")
-            elif new_name == "Nama Customer Anda":
-                 print("[ERROR] Harap ganti nama customer default.")
-        
-        save_json_utf8(customer_file, {"customer_info": {"customer_name": new_name}})
-        print("[OK] Nama customer diatur menjadi: '{}'".format(new_name))
-        print("="*50)
-    else:
-        # Jika nama sudah ada dan valid, cukup tampilkan pesan konfirmasi.
-        print("\n[INFO] Dijalankan untuk customer: '{}'".format(current_name))
-    # --- Akhir blok nama customer ---
+    # State machine loop for selection process
+    while True:
+        # Tahap 1: Pilih Parent
+        if 'parent' not in selection:
+            parent_devices = find_parent_devices()
+            if not parent_devices: return
+            result = select_from_list(parent_devices, "Pilih Perangkat (Parent)")
+            selection['parent'] = result
 
-    print("\n======================================================")
-    print("=== Skrip Interaktif Mengunduh & Distribusi Config ===")
-    print("======================================================")
-    
-    require_github()
-    print("\n[*] Mencari plugin spesifik yang tersedia di repositori...")
-    
-    all_plugins = find_plugins_recursively()
-    
-    if not all_plugins:
-        print("\n[ERROR] Tidak ada plugin spesifik yang ditemukan di repositori.")
-        return
-        
-    all_plugins.sort()
-    # Pilihan eksplisit dari pengguna
-    selected_paths = display_and_select_plugins(all_plugins)
+        # Tahap 2: Tentukan Cakupan
+        if 'scope' not in selection:
+            result = select_from_list(["Proses SEMUA plugin", "Pilih plugin spesifik"], "Tentukan Cakupan", can_go_back=True)
+            if result == BACK_COMMAND: selection.pop('parent', None); continue
+            selection['scope_choice'] = result
 
-    if not selected_paths:
-        print("[INFO] Tidak ada plugin yang dipilih. Proses dihentikan.")
-        return
-
-    # --- Blok Logika Ekspansi Berdasarkan Perangkat Master ---
-    print("\n[*] Menganalisis perangkat master dari pilihan Anda...")
-    master_devices = set(path.split('/')[0] for path in selected_paths)
-    
-    print("[INFO] Perangkat master yang teridentifikasi: {}".format(", ".join(master_devices)))
-    
-    # Cari semua plugin lain yang cocok dengan perangkat master
-    plugins_to_process = sorted(list(set(
-        plugin for plugin in all_plugins if plugin.split('/')[0] in master_devices
-    )))
-    
-    print("\n------------------------------------------------------")
-    print("Anda memilih {} plugin secara eksplisit.".format(len(selected_paths)))
-    print("Total {} plugin terkait akan diproses (sinkronisasi repositori).".format(len(plugins_to_process)))
-    print("------------------------------------------------------")
-    
-    # --- Akhir Blok Ekspansi ---
-    
-    print("\n--- Pilihan Distribusi ---")
-    print("1. Distribusi ke Logstash")
-    print("2. Distribusi ke Vector")
-    dist_choice = ""
-    while dist_choice not in ["1", "2"]:
-        dist_choice = py_input("Pilih target platform untuk SEMUA plugin di atas [1/2]: ").strip()
-        
-    success_plugins = 0
-    # Loop sekarang menggunakan daftar plugin yang sudah diperluas
-    for path in plugins_to_process:
-        # Tandai apakah plugin ini dipilih secara eksplisit oleh pengguna atau tidak
-        is_explicit_choice = path in selected_paths
-        
-        if process_single_plugin(path, dist_choice, is_explicit_choice):
-            success_plugins += 1
+        # Tahap 3: Pilih Plugin
+        if 'plugins_to_process' not in selection:
+            all_plugins_in_parent = find_plugins_in_parent(selection['parent'])
+            if not all_plugins_in_parent:
+                print("[ERROR] Tidak ada plugin di bawah '{}'.".format(selection['parent'])); return
             
-    print("\n======================================================")
-    print("PROSES SELESAI: {} dari {} plugin berhasil diproses.".format(success_plugins, len(plugins_to_process)))
-    print("======================================================")
+            if "spesifik" in selection['scope_choice']:
+                result = select_plugins_from_list(all_plugins_in_parent)
+                if result == BACK_COMMAND: selection.pop('scope_choice', None); continue
+                if not result: print("[INFO] Tidak ada plugin yang dipilih. Silakan pilih lagi."); continue
+                selection['plugins_to_process'] = result
+                selection['scope'] = "Pilihan Parsial ({} plugin)".format(len(result))
+            else:
+                selection['plugins_to_process'] = all_plugins_in_parent
+                selection['scope'] = "Sinkronisasi Penuh ({} plugin)".format(len(all_plugins_in_parent))
 
-    if success_plugins > 0:
-        if dist_choice == '1':
-            restart_logstash_stack()
-        elif dist_choice == '2':
-            restart_vector_stack()
+        # Tahap 4: Pilih Aksi Utama
+        if 'action' not in selection:
+            actions = ["Distribusi & Konfigurasi Auto-Update ke Logstash", "Distribusi & Konfigurasi Auto-Update ke Vector", "HANYA Konfigurasi Auto-Update (Tanpa Distribusi)"]
+            result = select_from_list(actions, "Pilih Aksi Utama", can_go_back=True)
+            if result == BACK_COMMAND: selection.pop('plugins_to_process', None); selection.pop('scope', None); continue
+            selection['action'] = result
 
-    print("\n--- Selesai ---")
+        # Tahap 5: Aktivasi Notifikasi
+        if 'active_plugins' not in selection:
+            result = select_active_notifications(selection['plugins_to_process'])
+            if result == BACK_COMMAND: selection.pop('action', None); continue
+            selection['active_plugins'] = result
+        
+        # Tahap 6: Ringkasan & Konfirmasi
+        display_summary(selection)
+        confirm = ask_yes_no("Lanjutkan dengan pekerjaan ini?", allow_back=True)
+        if confirm == 'n':
+            print("[INFO] Proses dibatalkan."); return
+        if confirm == BACK_COMMAND:
+            selection.pop('active_plugins', None); continue
+        
+        # Jika 'y', keluar dari loop pemilihan dan lanjut eksekusi
+        break
+
+    # --- EKSEKUSI UTAMA ---
+    print_header("Memulai Eksekusi")
+    safe_save_json(LAST_SELECTION_FILE, selection) # Simpan sesi sebelum eksekusi
+    all_downloaded_files = [p for p in [process_plugin(path) for path in selection['plugins_to_process']] if p]
+
+    if not all_downloaded_files:
+        print("[ERROR] Tidak ada file yang berhasil diunduh. Proses dihentikan."); return
+    
+    if "Distribusi" in selection['action']:
+        for downloaded in all_downloaded_files:
+            if "Logstash" in selection['action']: distribute_logstash(downloaded)
+            elif "Vector" in selection['action']: distribute_vector(downloaded, selection['parent'])
+    
+    print_header("Registrasi Pekerjaan & Aktivasi Notifikasi")
+    active_slugs_from_file = []
+    if os.path.exists('active_plugins.json'):
+        try:
+            with open('active_plugins.json', 'r') as f: active_slugs_from_file = json.load(f)
+        except: pass
+        
+    for downloaded in all_downloaded_files:
+        register_job(downloaded.get("updater_cfg"))
+        if downloaded.get('path') in selection['active_plugins']:
+            activate_plugin_notification(downloaded['full_slug'], active_slugs_from_file)
+            
+    safe_save_json('active_plugins.json', sorted(list(set(active_slugs_from_file))))
+    
+    if "Distribusi" in selection['action']: restart_stack(selection['action'])
+    
+    if os.path.exists(LAST_SELECTION_FILE) and not DRY_RUN: os.remove(LAST_SELECTION_FILE)
+
+    print_header("Proses Selesai")
+    if DRY_RUN: print("Mode Dry Run selesai. Tidak ada perubahan yang dibuat pada sistem.")
 
 if __name__ == "__main__":
     main()

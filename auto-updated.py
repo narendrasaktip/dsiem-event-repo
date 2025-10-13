@@ -242,8 +242,8 @@ def read_text(path):
 
 def slug(s):
     if s is None: return ""
-    s = s.strip().lower()
-    s = re.sub(r'[^a-z0-9]+', '-', s)
+    s = s.strip()
+    s = re.sub(r'[^a-zA-Z0-9]+', '-', s) 
     s = re.sub(r'-+', '-', s).strip('-')
     return s
 
