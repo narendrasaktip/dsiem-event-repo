@@ -838,11 +838,19 @@ def generate_file_vector_from_template(tsv_path, template_path, out_dir,
         "timestamp_field": field_data["timestamp_field"]
     }
 
+    # [PERBAIKAN] Logika untuk menangani integer hardcoded
+    integer_fields = ["src_port", "dst_port"]
     for key, val_obj in field_data["mappings"].items():
         mode, value = val_obj["mode"], val_obj["value"]
         placeholder = "{" + key + "}"
         if mode == 'h':
-            tpl = tpl.replace(placeholder, to_hard_literal(value))
+            # Cek apakah field ini harus integer DAN nilainya adalah angka
+            if key in integer_fields and (value or "").isdigit():
+                # Tulis sebagai angka, tanpa tanda kutip
+                tpl = tpl.replace(placeholder, str(value or 0))
+            else:
+                # Untuk field lain, tetap gunakan kutip
+                tpl = tpl.replace(placeholder, to_hard_literal(value))
         else:
             tpl = tpl.replace(placeholder, to_vrl_accessor(value))
         vector_cfg_out[key+"_mode"] = mode
@@ -983,7 +991,8 @@ def load_directive_rules():
     if os.path.exists(rule_file):
         try:
             with open(rule_file, 'r') as f:
-                templates = json.load(f)
+                # Menggunakan object_pairs_hook untuk menjaga urutan dari file JSON
+                templates = json.load(f, object_pairs_hook=OrderedDict)
         except Exception as e:
             print("[WARN] Gagal load template dari {}: {}".format(rule_file, e))
     return templates
@@ -1114,18 +1123,26 @@ def order_rule_fields(rule):
 def build_directive_entry(plugin_id, header, category, kingdom, disabled_lit, title, sid, rule_template="default", template_file=None, template_id=None):
     alarm_id_val = int(plugin_id) * 10000 + int(sid)
     rules_data = []
-    if rule_template == "manual": rules_data = build_manual_rules(plugin_id, title, sid)
+    if rule_template == "manual":
+        rules_data = build_manual_rules(plugin_id, title, sid)
     elif rule_template == "file" and template_id:
         all_templates = load_directive_rules()
         template_rules = all_templates.get(template_id, [])
         for rule in template_rules:
-            rule = rule.copy()
-            if "plugin_id" in rule and rule.get("plugin_id") == "{PLUGIN_ID}": rule["plugin_id"] = plugin_id
-            if "plugin_sid" in rule and rule.get("plugin_sid") == ["{SID}"]: rule["plugin_sid"] = [sid]
-            if "name" in rule and rule.get("name") == "{TITLE}": rule["name"] = title
-            rules_data.append(rule)
-    else: rules_data = get_rule_template(rule_template, plugin_id, sid, title)
+            # Lakukan substitusi placeholder
+            rule_str = json.dumps(rule)
+            rule_str = rule_str.replace('"{PLUGIN_ID}"', str(plugin_id))
+            rule_str = rule_str.replace('["{SID}"]', '[{}]'.format(sid))
+            rule_str = rule_str.replace("{TITLE}", title)
+            # Muat kembali sebagai OrderedDict
+            processed_rule = json.loads(rule_str, object_pairs_hook=OrderedDict)
+            rules_data.append(processed_rule)
+    else:
+        rules_data = get_rule_template(rule_template, plugin_id, sid, title)
+        
     rules_list = [order_rule_fields(r) for r in rules_data]
+    
+    # --- Perbaikan Kunci: Definisikan urutan outer key secara eksplisit ---
     directive_obj = OrderedDict()
     directive_obj["id"] = alarm_id_val
     directive_obj["name"] = "{}, {}".format(header, title)
@@ -1135,6 +1152,7 @@ def build_directive_entry(plugin_id, header, category, kingdom, disabled_lit, ti
     directive_obj["all_rules_always_active"] = False
     directive_obj["disabled"] = (disabled_lit.lower() == "true")
     directive_obj["rules"] = rules_list
+    
     return directive_obj
 
 def append_or_create_directive(meta_path, cfg_dir, registry, use_remote_defaults=False, out_filename=None):
