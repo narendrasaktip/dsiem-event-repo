@@ -28,6 +28,7 @@ VECTOR_POD_LABEL  = "app=vector-parser"
 
 # Konstanta untuk navigasi
 LAST_SELECTION_FILE = "last_selection.json"
+CUSTOMER_FILE = "customer.json" # [TAMBAHAN] Definisikan nama file customer
 BACK_COMMAND = "__BACK__"
 DRY_RUN = False
 
@@ -36,6 +37,10 @@ def print_header(title):
     print("\n" + "="*60)
     print("=== {}".format(title.upper()))
     print("="*60)
+    
+def die(msg, code=1):
+    print("\n[ERROR] {}".format(msg))
+    sys.exit(code)
 
 def safe_save_json(path, obj):
     print("[FILE] Menyiapkan untuk menyimpan: {}".format(path))
@@ -107,6 +112,40 @@ def ask_yes_no(p, allow_back=False):
             if a == 'b': return BACK_COMMAND
             return a
         print("Pilihan tidak valid.")
+
+# ====== [TAMBAHAN] FUNGSI SETUP CUSTOMER ======
+def setup_customer_info():
+    """Memeriksa, menanyakan, dan menyimpan nama customer ke customer.json."""
+    print_header("Konfigurasi Customer")
+    current_name = ""
+    # Coba baca nama yang ada
+    if os.path.exists(CUSTOMER_FILE):
+        try:
+            with open(CUSTOMER_FILE, 'r') as f:
+                data = json.load(f)
+                current_name = data.get("customer_info", {}).get("customer_name", "")
+        except (IOError, json.JSONDecodeError):
+            print("[WARN] File customer.json tidak bisa dibaca. Akan dibuat ulang.")
+            current_name = "" # Anggap kosong jika file rusak
+
+    # Hanya tanya jika nama kosong atau masih placeholder
+    if not current_name or current_name == "Nama Customer Anda":
+        if not current_name:
+             print("[INFO] File customer.json belum ada atau rusak. Silakan konfigurasikan nama customer.")
+        else:
+             print("[INFO] Nama customer masih menggunakan placeholder. Silakan diganti.")
+             
+        while True:
+            new_name = py_input("Masukkan Nama Customer baru (untuk notifikasi email): ").strip()
+            if new_name and new_name != "Nama Customer Anda":
+                current_name = new_name
+                break
+            print("[ERROR] Nama customer tidak boleh kosong atau sama dengan placeholder default.")
+        
+        data_to_save = {"customer_info": {"customer_name": current_name}}
+        safe_save_json(CUSTOMER_FILE, data_to_save)
+    else:
+        print("[OK] Nama customer sudah dikonfigurasi: '{}'".format(current_name))
 
 # ====== FUNGSI GITHUB ======
 def require_github():
@@ -190,10 +229,8 @@ def download_and_save(remote_path, local_path):
 # ====== FUNGSI ALUR BARU (NEW FLOW) ======
 def select_from_list(options, title, can_go_back=False):
     print_header(title)
-    offset = 0
     if can_go_back:
         print("0. Kembali ke langkah sebelumnya")
-        offset = 1
     
     for i, option in enumerate(options, 1):
         print("{}. {}".format(i, option))
@@ -206,8 +243,8 @@ def select_from_list(options, title, can_go_back=False):
             return options[int(choice) - 1]
         print("[ERROR] Pilihan tidak valid.")
 
-def select_plugins_from_list(available_plugins):
-    print_header("Pilih Plugin Spesifik")
+def select_plugins_from_list(available_plugins, title):
+    print_header(title)
     for i, plugin in enumerate(available_plugins, 1):
         print("{}. {}".format(i, plugin))
 
@@ -228,29 +265,59 @@ def select_plugins_from_list(available_plugins):
                         raise ValueError
                     selected_indices.update(range(start - 1, end))
                 except ValueError:
-                    print("[ERROR] Rentang '{}' tidak valid.".format(part))
-                    valid = False; break
+                    print("[ERROR] Rentang '{}' tidak valid.".format(part)); valid = False; break
             else:
                 try:
                     idx = int(part) - 1
                     if not (0 <= idx < len(available_plugins)): raise ValueError
                     selected_indices.add(idx)
                 except ValueError:
-                    print("[ERROR] Pilihan '{}' tidak valid.".format(part))
-                    valid = False; break
+                    print("[ERROR] Pilihan '{}' tidak valid.".format(part)); valid = False; break
         
         if valid:
             return sorted([available_plugins[i] for i in selected_indices])
 
-def select_active_notifications(plugins_to_process):
-    print_header("Aktivasi Notifikasi (Mode 'Full')")
-    print("Pilih plugin mana yang ingin diaktifkan notifikasi email-nya.")
-    print("Plugin yang tidak dipilih akan tetap di-pull (mode 'pasif').\n")
-    for i, plugin in enumerate(plugins_to_process, 1):
+def select_passive_scope(focal_plugin_path):
+    print_header("Cakupan Sinkronisasi Pasif")
+    print("Anda memilih '{}' sebagai fokus utama.".format(focal_plugin_path))
+    print("Bagaimana Anda ingin menangani plugin lain yang terkait?")
+    print("Plugin lain akan diunduh & didaftarkan untuk auto-update, tapi tidak didistribusikan.")
+
+    parts = focal_plugin_path.split('/')
+    options = [("none", "Jangan sertakan plugin lain (proses HANYA yang dipilih).")]
+    
+    if len(parts) >= 4:
+        submodule_path = "/".join(parts[:3])
+        options.append(("submodule", "Sertakan semua plugin lain di submodule '{}'.".format(submodule_path)))
+    if len(parts) >= 3:
+        module_path = "/".join(parts[:2])
+        options.append(("module", "Sertakan semua plugin lain di modul '{}'.".format(module_path)))
+    if len(parts) >= 2:
+        parent_path = parts[0]
+        options.append(("parent", "Sertakan semua plugin lain di parent folder '{}'.".format(parent_path)))
+    
+    for i, (_, desc) in enumerate(options, 1):
+        print("{}. {}".format(i, desc))
+
+    while True:
+        choice = py_input("Pilihan Anda [1-{}]: ".format(len(options))).strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            scope_key, _ = options[int(choice) - 1]
+            if scope_key == "parent": return "parent", parts[0]
+            if scope_key == "module": return "module", "/".join(parts[:2])
+            if scope_key == "submodule": return "submodule", "/".join(parts[:3])
+            return "none", None
+        print("[ERROR] Pilihan tidak valid.")
+
+def select_active_notifications(focal_plugins):
+    print_header("Aktivasi Notifikasi (Hanya untuk Plugin Fokal)")
+    print("Pilih plugin FOKAL mana yang ingin diaktifkan notifikasi email-nya.")
+    print("Plugin pasif akan selalu non-aktif.\n")
+    for i, plugin in enumerate(focal_plugins, 1):
         print("{}. {}".format(i, plugin))
     
     print("\nPilihan:")
-    print("- Masukkan nomor untuk mengaktifkan (cth: 1, 3, 5-7)")
+    print("- Masukkan nomor untuk mengaktifkan (cth: 1, 3)")
     print("- Ketik 'A' untuk mengaktifkan SEMUA")
     print("- Ketik 'b' untuk kembali ke langkah sebelumnya")
     print("- Tekan Enter untuk tidak mengaktifkan satupun")
@@ -259,38 +326,38 @@ def select_active_notifications(plugins_to_process):
         choice_str = py_input("\nPlugin yang akan diaktifkan notifikasinya: ").strip().lower()
         if not choice_str: return []
         if choice_str == 'b': return BACK_COMMAND
-        if choice_str == 'a': return plugins_to_process
+        if choice_str == 'a': return focal_plugins
         
         selected_indices = set()
         valid = True
         for part in choice_str.split(','):
             part = part.strip()
-            if not part: continue
-            if '-' in part:
-                try:
-                    start, end = map(int, part.split('-'))
-                    if start > end or not (1 <= start <= len(plugins_to_process) and 1 <= end <= len(plugins_to_process)): raise ValueError
-                    selected_indices.update(range(start - 1, end))
-                except ValueError:
-                    print("[ERROR] Rentang '{}' tidak valid.".format(part)); valid = False; break
-            else:
-                try:
-                    idx = int(part) - 1
-                    if not (0 <= idx < len(plugins_to_process)): raise ValueError
-                    selected_indices.add(idx)
-                except ValueError:
-                    print("[ERROR] Pilihan '{}' tidak valid.".format(part)); valid = False; break
-        if valid: return sorted([plugins_to_process[i] for i in selected_indices])
+            if not part.isdigit(): valid = False; break
+            idx = int(part) - 1
+            if not (0 <= idx < len(focal_plugins)): valid = False; break
+            selected_indices.add(idx)
+
+        if valid:
+            return sorted([focal_plugins[i] for i in selected_indices])
+        else:
+            print("[ERROR] Pilihan '{}' tidak valid.".format(choice_str))
 
 def display_summary(selection):
     print_header("Ringkasan Pekerjaan")
-    if 'parent' in selection: print("Perangkat Induk      : {}".format(selection['parent']))
-    if 'scope' in selection: print("Cakupan              : {}".format(selection['scope']))
+    if 'focal_plugins' in selection:
+        print("Plugin Fokal         : {} plugin".format(len(selection['focal_plugins'])))
+        for p in selection['focal_plugins']: print("    - {}".format(p))
+    
+    if 'passive_scope_desc' in selection:
+        print("Cakupan Pasif        : {}".format(selection['passive_scope_desc']))
+        print("Total Plugin Proses  : {} ({} fokal + {} pasif)".format(
+            len(selection['plugins_to_process']), len(selection['focal_plugins']), len(selection['passive_plugins'])
+        ))
+
     if 'action' in selection: print("Aksi Utama           : {}".format(selection['action']))
     if 'active_plugins' in selection:
         active_count = len(selection['active_plugins'])
-        total_count = len(selection['plugins_to_process'])
-        print("Plugin Aktif (Notif) : {} dari {} plugin dipilih".format(active_count, total_count))
+        print("Plugin Aktif (Notif) : {} dari {} plugin fokal".format(active_count, len(selection['focal_plugins'])))
         if active_count > 0:
             for plugin in selection['active_plugins']:
                 print("    - {}".format(plugin))
@@ -312,20 +379,16 @@ def process_plugin(plugin_path):
     print("[INFO] Ditemukan 'full_slug': {}".format(full_slug))
     local_plugin_dir = os.path.join(OUT_DIR, plugin_path)
     paths_to_download = {
-        "conf70":      "70_dsiem-plugin_{}.conf".format(full_slug),
-        "vector_conf": "70_transform_dsiem-plugin-{}.yaml".format(full_slug),
-        "tsv":         "{}_plugin-sids.tsv".format(full_slug),
-        "directive":   "directives_{}_{}.json".format(BACKEND_POD, full_slug),
-        "json_dict":   "{}_plugin-sids.json".format(full_slug),
-        "updater_cfg": "{}_updater.json".format(full_slug),
+        "conf70":      "70_dsiem-plugin_{}.conf".format(full_slug), "vector_conf": "70_transform_dsiem-plugin-{}.yaml".format(full_slug),
+        "tsv":         "{}_plugin-sids.tsv".format(full_slug), "directive":   "directives_{}_{}.json".format(BACKEND_POD, full_slug),
+        "json_dict":   "{}_plugin-sids.json".format(full_slug), "updater_cfg": "{}_updater.json".format(full_slug),
     }
     downloaded_files = {"full_slug": full_slug, "path": plugin_path}
     for key, filename in paths_to_download.items():
         remote_path = os.path.join(plugin_path, filename).replace("\\", "/")
         local_path = os.path.join(local_plugin_dir, filename)
         saved_path, _ = download_and_save(remote_path, local_path)
-        if saved_path:
-            downloaded_files[key] = saved_path
+        if saved_path: downloaded_files[key] = saved_path
     return downloaded_files
 
 def distribute_logstash(downloaded_files):
@@ -401,7 +464,8 @@ def main():
         print("\n" + "#"*60 + "\n### MODE DRY RUN AKTIF. TIDAK ADA PERUBAHAN YANG AKAN DIBUAT. ###\n" + "#"*60)
 
     print_header("Skrip Pull & Distribusi Konfigurasi"); require_github()
-    
+    setup_customer_info()
+
     selection = {}
     if os.path.exists(LAST_SELECTION_FILE):
         if ask_yes_no("Ditemukan sesi terakhir. Lanjutkan?") == 'y':
@@ -410,73 +474,81 @@ def main():
             except Exception as e:
                 print("[WARN] Gagal memuat sesi: {}. Memulai sesi baru.".format(e)); selection = {}
 
-    # State machine loop for selection process
     while True:
-        # Tahap 1: Pilih Parent
         if 'parent' not in selection:
             parent_devices = find_parent_devices()
             if not parent_devices: return
             result = select_from_list(parent_devices, "Pilih Perangkat (Parent)")
             selection['parent'] = result
 
-        # Tahap 2: Tentukan Cakupan
-        if 'scope' not in selection:
-            result = select_from_list(["Proses SEMUA plugin", "Pilih plugin spesifik"], "Tentukan Cakupan", can_go_back=True)
+        if 'scope_choice' not in selection:
+            result = select_from_list(["Proses SEMUA plugin di bawah '{}'".format(selection['parent']), "Pilih plugin spesifik"], "Tentukan Cakupan Awal", can_go_back=True)
             if result == BACK_COMMAND: selection.pop('parent', None); continue
             selection['scope_choice'] = result
 
-        # Tahap 3: Pilih Plugin
-        if 'plugins_to_process' not in selection:
+        if 'focal_plugins' not in selection:
             all_plugins_in_parent = find_plugins_in_parent(selection['parent'])
-            if not all_plugins_in_parent:
-                print("[ERROR] Tidak ada plugin di bawah '{}'.".format(selection['parent'])); return
+            if not all_plugins_in_parent: die("Tidak ada plugin di bawah '{}'.".format(selection['parent']));
             
             if "spesifik" in selection['scope_choice']:
-                result = select_plugins_from_list(all_plugins_in_parent)
+                result = select_plugins_from_list(all_plugins_in_parent, "Pilih Plugin Fokal")
                 if result == BACK_COMMAND: selection.pop('scope_choice', None); continue
                 if not result: print("[INFO] Tidak ada plugin yang dipilih. Silakan pilih lagi."); continue
-                selection['plugins_to_process'] = result
-                selection['scope'] = "Pilihan Parsial ({} plugin)".format(len(result))
+                selection['focal_plugins'] = result
             else:
-                selection['plugins_to_process'] = all_plugins_in_parent
-                selection['scope'] = "Sinkronisasi Penuh ({} plugin)".format(len(all_plugins_in_parent))
+                selection['focal_plugins'] = all_plugins_in_parent
+                selection['passive_scope'] = 'none'
+                selection['passive_scope_desc'] = 'Tidak ada (semua plugin adalah fokal)'
 
-        # Tahap 4: Pilih Aksi Utama
+        if 'passive_scope' not in selection:
+            scope_key, scope_path = select_passive_scope(selection['focal_plugins'][0])
+            selection['passive_scope'] = scope_key
+            if scope_key != 'none':
+                all_plugins_in_scope = find_plugins_in_parent(scope_path)
+                selection['passive_plugins'] = [p for p in all_plugins_in_scope if p not in selection['focal_plugins']]
+                selection['passive_scope_desc'] = "Semua plugin di '{}'".format(scope_path)
+            else:
+                selection['passive_plugins'] = []
+                selection['passive_scope_desc'] = "Tidak ada (hanya proses plugin fokal)"
+            
+            selection['plugins_to_process'] = sorted(list(set(selection['focal_plugins'] + selection['passive_plugins'])))
+
         if 'action' not in selection:
             actions = ["Distribusi & Konfigurasi Auto-Update ke Logstash", "Distribusi & Konfigurasi Auto-Update ke Vector", "HANYA Konfigurasi Auto-Update (Tanpa Distribusi)"]
             result = select_from_list(actions, "Pilih Aksi Utama", can_go_back=True)
-            if result == BACK_COMMAND: selection.pop('plugins_to_process', None); selection.pop('scope', None); continue
+            if result == BACK_COMMAND: selection.pop('passive_scope', None); selection.pop('plugins_to_process', None); continue
             selection['action'] = result
 
-        # Tahap 5: Aktivasi Notifikasi
         if 'active_plugins' not in selection:
-            result = select_active_notifications(selection['plugins_to_process'])
+            result = select_active_notifications(selection['focal_plugins'])
             if result == BACK_COMMAND: selection.pop('action', None); continue
             selection['active_plugins'] = result
         
-        # Tahap 6: Ringkasan & Konfirmasi
         display_summary(selection)
         confirm = ask_yes_no("Lanjutkan dengan pekerjaan ini?", allow_back=True)
-        if confirm == 'n':
-            print("[INFO] Proses dibatalkan."); return
-        if confirm == BACK_COMMAND:
-            selection.pop('active_plugins', None); continue
+        if confirm == 'n': print("[INFO] Proses dibatalkan."); return
+        if confirm == BACK_COMMAND: selection.pop('active_plugins', None); continue
         
-        # Jika 'y', keluar dari loop pemilihan dan lanjut eksekusi
         break
 
     # --- EKSEKUSI UTAMA ---
     print_header("Memulai Eksekusi")
-    safe_save_json(LAST_SELECTION_FILE, selection) # Simpan sesi sebelum eksekusi
+    safe_save_json(LAST_SELECTION_FILE, selection)
     all_downloaded_files = [p for p in [process_plugin(path) for path in selection['plugins_to_process']] if p]
 
-    if not all_downloaded_files:
-        print("[ERROR] Tidak ada file yang berhasil diunduh. Proses dihentikan."); return
+    if not all_downloaded_files: die("Tidak ada file yang berhasil diunduh. Proses dihentikan.")
     
+    distributed_something = False
     if "Distribusi" in selection['action']:
+        print_header("Distribusi Plugin Fokal")
+        focal_paths = selection['focal_plugins']
         for downloaded in all_downloaded_files:
-            if "Logstash" in selection['action']: distribute_logstash(downloaded)
-            elif "Vector" in selection['action']: distribute_vector(downloaded, selection['parent'])
+            if downloaded['path'] in focal_paths:
+                if "Logstash" in selection['action']: distribute_logstash(downloaded)
+                elif "Vector" in selection['action']: distribute_vector(downloaded, selection['parent'])
+                distributed_something = True
+        if not distributed_something:
+            print("[INFO] Tidak ada plugin fokal yang dipilih untuk didistribusikan.")
     
     print_header("Registrasi Pekerjaan & Aktivasi Notifikasi")
     active_slugs_from_file = []
@@ -492,7 +564,8 @@ def main():
             
     safe_save_json('active_plugins.json', sorted(list(set(active_slugs_from_file))))
     
-    if "Distribusi" in selection['action']: restart_stack(selection['action'])
+    if "Distribusi" in selection['action'] and distributed_something:
+        restart_stack(selection['action'])
     
     if os.path.exists(LAST_SELECTION_FILE) and not DRY_RUN: os.remove(LAST_SELECTION_FILE)
 
