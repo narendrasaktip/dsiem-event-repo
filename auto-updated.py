@@ -661,17 +661,28 @@ def main():
     
     section("Sync GitHub JSON Dictionary")
     json_obj, _ = gh_get(gh_repo, gh_branch, gh_token, paths["json_dict"], debug=args.debug)
-    new_json_content = write_json_dictionary(merged_rows)
-    existing_json_content = ""
-    if json_obj: existing_json_content = base64.b64decode(json_obj.get("content", "")).decode("utf-8")
-    
-    if new_json_content.strip() != existing_json_content.strip():
-        info("JSON content mismatch. Pushing full sync to GitHub...")
-        gh_put(gh_repo, gh_branch, gh_token, paths["json_dict"], new_json_content.encode("utf-8"),
+
+    # 1. Buat konten JSON baru dan muat sebagai objek Python
+    new_json_content_str = write_json_dictionary(merged_rows)
+    new_data_obj = json.loads(new_json_content_str)
+
+    # 2. Muat konten JSON yang ada dari GitHub (jika ada) sebagai objek Python
+    existing_data_obj = {}
+    if json_obj and json_obj.get("content"):
+        try:
+            existing_json_content_str = base64.b64decode(json_obj.get("content", "")).decode("utf-8")
+            existing_data_obj = json.loads(existing_json_content_str)
+        except (json.JSONDecodeError, TypeError):
+            warn("Gagal mem-parsing konten JSON dari GitHub. Akan dianggap sebagai perubahan.")
+
+    # 3. Bandingkan kedua objek Python, bukan string mentah
+    if new_data_obj != existing_data_obj:
+        info("Konten JSON berbeda. Melakukan push sinkronisasi penuh ke GitHub...")
+        gh_put(gh_repo, gh_branch, gh_token, paths["json_dict"], new_json_content_str.encode("utf-8"),
                "[auto] Sync JSON dictionary for {}".format(siem_plugin_type), sha=json_obj.get("sha") if json_obj else None, debug=args.debug, dry=args.dry_run)
-        info("JSON Dict push: OK (Content Synced)")
+        info("JSON Dict push: OK (Konten disinkronkan)")
     else:
-        info("JSON Dict is already in sync with TSV.")
+        info("JSON Dict sudah sinkron dengan data TSV. Tidak ada perubahan.")
 
     section("Update 70.conf (Template-based)")
     conf70_obj, _ = gh_get(gh_repo, gh_branch, gh_token, paths["conf70"], debug=args.debug)

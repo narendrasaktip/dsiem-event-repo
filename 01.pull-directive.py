@@ -516,7 +516,8 @@ def main():
         if 'action' not in selection:
             actions = ["Distribusi & Konfigurasi Auto-Update ke Logstash", "Distribusi & Konfigurasi Auto-Update ke Vector", "HANYA Konfigurasi Auto-Update (Tanpa Distribusi)"]
             result = select_from_list(actions, "Pilih Aksi Utama", can_go_back=True)
-            if result == BACK_COMMAND: selection.pop('passive_scope', None); selection.pop('plugins_to_process', None); continue
+            if result == BACK_COMMAND: 
+                selection.pop('focal_plugins', None); selection.pop('passive_scope', None); selection.pop('plugins_to_process', None); continue
             selection['action'] = result
 
         if 'active_plugins' not in selection:
