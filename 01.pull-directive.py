@@ -28,16 +28,16 @@ VECTOR_POD_LABEL  = "app=vector-parser"
 
 # Konstanta untuk navigasi
 LAST_SELECTION_FILE = "last_selection.json"
-CUSTOMER_FILE = "customer.json" # [TAMBAHAN] Definisikan nama file customer
+CUSTOMER_FILE = "customer.json"
 BACK_COMMAND = "__BACK__"
 DRY_RUN = False
 
-# ====== I/O & HELPERS (Dengan Dukungan Dry Run & Navigasi) ======
+# ====== I/O & HELPERS ======
 def print_header(title):
     print("\n" + "="*60)
     print("=== {}".format(title.upper()))
     print("="*60)
-    
+
 def die(msg, code=1):
     print("\n[ERROR] {}".format(msg))
     sys.exit(code)
@@ -113,39 +113,36 @@ def ask_yes_no(p, allow_back=False):
             return a
         print("Pilihan tidak valid.")
 
-# ====== [TAMBAHAN] FUNGSI SETUP CUSTOMER ======
 def setup_customer_info():
-    """Memeriksa, menanyakan, dan menyimpan nama customer ke customer.json."""
     print_header("Konfigurasi Customer")
-    current_name = ""
-    # Coba baca nama yang ada
+    customer_name = ""
+    
     if os.path.exists(CUSTOMER_FILE):
         try:
             with open(CUSTOMER_FILE, 'r') as f:
                 data = json.load(f)
-                current_name = data.get("customer_info", {}).get("customer_name", "")
+                customer_name = data.get("customer_info", {}).get("customer_name", "")
         except (IOError, json.JSONDecodeError):
             print("[WARN] File customer.json tidak bisa dibaca. Akan dibuat ulang.")
-            current_name = "" # Anggap kosong jika file rusak
+            customer_name = ""
 
-    # Hanya tanya jika nama kosong atau masih placeholder
-    if not current_name or current_name == "Nama Customer Anda":
-        if not current_name:
-             print("[INFO] File customer.json belum ada atau rusak. Silakan konfigurasikan nama customer.")
+    if not customer_name or customer_name == "Nama Customer Anda":
+        if not customer_name:
+             print("[INFO] File customer.json belum ada. Silakan konfigurasikan.")
         else:
              print("[INFO] Nama customer masih menggunakan placeholder. Silakan diganti.")
              
         while True:
             new_name = py_input("Masukkan Nama Customer baru (untuk notifikasi email): ").strip()
             if new_name and new_name != "Nama Customer Anda":
-                current_name = new_name
+                customer_name = new_name
                 break
-            print("[ERROR] Nama customer tidak boleh kosong atau sama dengan placeholder default.")
+            print("[ERROR] Nama customer tidak boleh kosong atau sama dengan placeholder.")
         
-        data_to_save = {"customer_info": {"customer_name": current_name}}
+        data_to_save = {"customer_info": {"customer_name": customer_name}}
         safe_save_json(CUSTOMER_FILE, data_to_save)
     else:
-        print("[OK] Nama customer sudah dikonfigurasi: '{}'".format(current_name))
+        print("[OK] Nama customer sudah dikonfigurasi: '{}'".format(customer_name))
 
 # ====== FUNGSI GITHUB ======
 def require_github():
@@ -496,9 +493,12 @@ def main():
                 if not result: print("[INFO] Tidak ada plugin yang dipilih. Silakan pilih lagi."); continue
                 selection['focal_plugins'] = result
             else:
+                # [PERBAIKAN 1] Logika yang benar untuk alur "Proses SEMUA"
                 selection['focal_plugins'] = all_plugins_in_parent
                 selection['passive_scope'] = 'none'
                 selection['passive_scope_desc'] = 'Tidak ada (semua plugin adalah fokal)'
+                selection['passive_plugins'] = []
+                selection['plugins_to_process'] = all_plugins_in_parent
 
         if 'passive_scope' not in selection:
             scope_key, scope_path = select_passive_scope(selection['focal_plugins'][0])
@@ -564,6 +564,7 @@ def main():
             
     safe_save_json('active_plugins.json', sorted(list(set(active_slugs_from_file))))
     
+    # [PERBAIKAN 2] Gunakan `selection['action']` saat memanggil restart_stack
     if "Distribusi" in selection['action'] and distributed_something:
         restart_stack(selection['action'])
     
