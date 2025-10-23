@@ -400,6 +400,8 @@ def gh_paths(log_type, module_name, submodule_name, filter1_slug):
         "base_dir":   base_dir
     }
 
+# Di file: main.py
+
 def generate_updater_config(output_path, context):
     """
     Membuat file konfigurasi updater.json berdasarkan konteks dari eksekusi skrip.
@@ -417,7 +419,14 @@ def generate_updater_config(output_path, context):
             ("index", context.get("index_pattern")),
             ("field", context.get("translate_field_no_kw")),
             ("size", context.get("size")),
-            ("filters", context.get("filters"))
+            ("filters", context.get("filters")),
+            # --- TAMBAHKAN BLOK INI ---
+            ("time_range", OrderedDict([
+                ("field", "@timestamp"),
+                ("gte", "now-1h"),
+                ("lte", "now")
+            ]))
+            # --- AKHIR BLOK TAMBAHAN ---
         ])),
         ("layout", OrderedDict([
             ("device", context.get("log_type_auto")),
@@ -436,8 +445,6 @@ def generate_updater_config(output_path, context):
             ("template_id", context.get("directive_cfg_out", {}).get("TEMPLATE_ID"))
         ])),
         ("github", OrderedDict([
-            ("repo", context.get("github_repo")),
-            ("branch", context.get("github_branch")),
             ("template_path", context.get("template_path_70")),
             ("plugin_registry_path", context.get("plugin_registry_path"))
         ])),
@@ -563,14 +570,33 @@ def build_filters(filters):
             out.append({"term":{f["field"]: f["value"]}})
     return out
 
-def build_query(field_name, size, filters):
+# Di file: main.py
+
+def build_query(field_name, size, filters, time_range=None):
     q={"size":0,"aggs":{"event_names":{"terms":{"field":field_name,"size":size}}}}
     mf=build_filters(filters)
+    
+    # --- TAMBAHKAN BLOK INI ---
+    if time_range:
+        try:
+            range_filter = {
+                "range": {
+                    time_range["field"]: {
+                        "gte": time_range["gte"],
+                        "lte": time_range["lte"]
+                    }
+                }
+            }
+            mf.append(range_filter)
+        except KeyError:
+            print("[WARN] Konfigurasi time_range tidak lengkap, diabaikan.")
+    # --- AKHIR BLOK TAMBAHAN ---
+    
     if mf: q["query"]={"bool":{"filter":mf}}
     return q
 
-def do_request(url, field_name, size, filters, auth):
-    body=build_query(field_name, size, filters)
+def do_request(url, field_name, size, filters, auth, time_range=None):
+    body=build_query(field_name, size, filters, time_range=time_range) # <-- UBAH BARIS INI
     return requests.post(url, auth=auth, headers={"Content-Type":"application/json"},
                          data=json.dumps(body), timeout=TIMEOUT, verify=VERIFY_TLS)
 
@@ -1368,6 +1394,31 @@ def main():
     print("[INFO] GitHub module/submodule : {}/{}".format(module_slug, submodule_slug or "(none)"))
 
     filters = collect_filters()
+
+    time_range_config = None
+    print("\n=== PENGATURAN RENTANG WAKTU (OPSIONAL) ===")
+    
+    # Minta input jumlah jam
+    hours_input = py_input("Masukkan rentang jam terakhir (cth: 1, 4, 24). Kosongkan untuk 'Full Time': ").strip()
+
+    if not hours_input:
+        print("[INFO] Rentang waktu tidak diatur. Skrip akan menarik 'Full Time'.")
+    else:
+        try:
+            hours = int(hours_input)
+            if hours > 0:
+                gte_val = "now-{}h".format(hours)
+                time_range_config = {
+                    "field": "@timestamp",  # Default field @timestamp
+                    "gte": gte_val,
+                    "lte": "now"
+                }
+                print("[INFO] Rentang waktu diaktifkan: {} jam terakhir ({} s/d now).".format(hours, gte_val))
+            else:
+                print("[WARN] Angka harus lebih besar dari 0. Menarik 'Full Time'.")
+        except ValueError:
+            print("[WARN] Input '{}' bukan angka. Menarik 'Full Time'.".format(hours_input))
+
     auth = HTTPBasicAuth(es_user, es_pass)
     url = "{}/{}/_search".format(ES_HOST.rstrip("/"), index_pattern)
 
@@ -1378,7 +1429,7 @@ def main():
     query_success = False
 
     try:
-        r = do_request(url, field_name, size, filters, auth)
+        r = do_request(url, field_name, size, filters, auth, time_range=time_range_config)
         if r.status_code < 300:
             data_check = r.json()
             if data_check.get("aggregations",{}).get("event_names",{}).get("buckets",[]):
@@ -1399,7 +1450,7 @@ def main():
             print("[WARN] Query awal gagal/kosong. Mencoba fallback dengan .keyword...")
             print("[QUERY] Menjalankan agregasi terms untuk field: '{}'".format(alt_field))
             try:
-                r2 = do_request(url, alt_field, size, alt_filters, auth)
+                r2 = do_request(url, alt_field, size, alt_filters, auth, time_range=time_range_config)
                 if r2.status_code < 300:
                     data_check = r2.json()
                     if data_check.get("aggregations",{}).get("event_names",{}).get("buckets",[]):

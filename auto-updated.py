@@ -454,6 +454,9 @@ def gh_paths(log_type, module_name, submodule_name, filter_key, backend_pod="dsi
 # =========================================================
 # OpenSearch (UPDATED)
 # =========================================================
+# =========================================================
+# OpenSearch (UPDATED)
+# =========================================================
 def load_cred(path, user):
     with io.open(path,"r",encoding="utf-8") as f:
         for ln in f:
@@ -471,7 +474,9 @@ def fetch_titles(es_cfg, q_cfg, debug=False):
     body={"size":0, "aggs":{"event_names":{"terms":{"field": agg_field, "size": size}}}}
 
     # --- LOGIKA FILTER YANG DIPERBARUI ---
-    mf = []
+    mf = [] # 'mf' adalah list untuk semua filter
+    
+    # 1. Logika untuk 'filters' (ini sudah ada di kodemu)
     for f in q_cfg.get("filters", []):
         op = f.get("op", "term")
         field_name = f["field"]
@@ -489,16 +494,40 @@ def fetch_titles(es_cfg, q_cfg, debug=False):
                 field_name += ".keyword"
             mf.append({"term": {field_name: value}})
     
-    if mf: body["query"]={"bool":{"filter": mf}}
+    # 2. === TAMBAHKAN BLOK INI UNTUK MEMBACA 'time_range' ===
+    if "time_range" in q_cfg:
+        time_cfg = q_cfg["time_range"]
+        try:
+            # Pastikan semua key yang diperlukan ada
+            range_filter = {
+                "range": {
+                    time_cfg["field"]: {
+                        "gte": time_cfg["gte"],
+                        "lte": time_cfg["lte"]
+                    }
+                }
+            }
+            mf.append(range_filter)
+            info("Applying time_range filter: {} from {} to {}".format(time_cfg["field"], time_cfg["gte"], time_cfg["lte"]))
+        except KeyError as e:
+            warn("Konfigurasi 'time_range' tidak lengkap. Key hilang: {}. Filter waktu dibatalkan.".format(e))
+    # === AKHIR DARI BLOK TAMBAHAN ===
+            
+    # 3. Terapkan semua filter (dari 'filters' dan 'time_range') ke body query
+    if mf: 
+        body["query"]={"bool":{"filter": mf}}
     # --- AKHIR DARI LOGIKA FILTER BARU ---
     
     url = "{}/{}/_search".format(host.rstrip("/"), index)
+    
+    if debug:
+        info("Mengirim OpenSearch Query Body:\n{}".format(json.dumps(body, indent=2)))
+        
     r = requests.post(url, auth=auth, headers={"Content-Type":"application/json"}, data=json.dumps(body), timeout=timeout, verify=verify)
     if r.status_code != 200:
         die("OpenSearch error {}: {}".format(r.status_code, r.text[:400]), code=3)
     buckets = r.json().get("aggregations",{}).get("event_names",{}).get("buckets",[])
     return [b.get("key","") for b in buckets if b.get("key")], agg_field, len(buckets)
-
 # =========================================================
 # Fungsi Distribusi & Update LOKAL
 # =========================================================
@@ -554,6 +583,8 @@ def parse_args():
     ap.add_argument("--debug", action="store_true", help="extra debug logs")
     return ap.parse_args()
 
+# Di file: auto-updated.py
+
 def main():
     args = parse_args()
     section("Load config")
@@ -585,20 +616,36 @@ def main():
     
     gh_token = GITHUB_TOKEN
     if not gh_token:
-        die("Environment variable GITHUB_TOKEN belum di-set atau kosong. Harap jalankan 'source 01-setup.sh' terlebih dahulu.", code=2)
+        die("Environment variable GITHUB_TOKEN belum di-set atau kosong. Harap jalankan 'source config.sh' terlebih dahulu.", code=2)
     
     paths = gh_paths(layout["device"], layout["module"], layout.get("submodule"), layout.get("filter_key"))
     siem_plugin_type, plugin_id = paths["full_slug"], int(file70["plugin_id"])
     category, kingdom, disabled, template_id = dircfg.get("CATEGORY"), dircfg.get("KINGDOM"), bool(dircfg.get("DISABLED")), dircfg.get("template_id")
-    # --- KONFIGURASI LEBIH TANGGUH ---
-    gh_repo = gh_cfg["repo"]
-    gh_branch = gh_cfg.get("branch", "main")
+    
+    # --- [ INI BAGIAN YANG DIUBAH ] ---
+    # Prioritaskan Environment Variable dari config.sh
+    env_repo = os.getenv("GITHUB_REPO")
+    env_branch = os.getenv("GITHUB_BRANCH")
+
+    # Gunakan Env Var jika ada, jika tidak, baru baca dari file _updater.json
+    gh_repo = env_repo if env_repo else gh_cfg["repo"]
+    gh_branch = env_branch if env_branch else gh_cfg.get("branch", "main")
+    
+    # Sisa config tetap dari file JSON
     template70_path = gh_cfg.get("template_path", "./template-70.js")
     registry_path = gh_cfg.get("plugin_registry_path", "plugin_id.json") # Default value
+
+    # Tambahkan log untuk konfirmasi
+    if env_repo:
+        info("Using GITHUB_REPO from environment: {}".format(gh_repo))
+    else:
+        info("Using GITHUB_REPO from config file: {}".format(gh_repo))
+    # --- [ AKHIR BAGIAN YANG DIUBAH ] ---
 
     info("CFG: {}, Repo: {}@{}, Slug: {}".format(CFG_PATH, gh_repo, gh_branch, siem_plugin_type))
     
     section("Check Plugin ID Registry")
+    # (Sisa fungsi main() tetap sama...)
     reg_obj, reg_sha = gh_get(gh_repo, gh_branch, gh_token, registry_path, debug=args.debug)
     registry, found_in_reg = {}, False
     if reg_obj: registry = json.loads(base64.b64decode(reg_obj.get("content","")).decode("utf-8"))
@@ -645,7 +692,7 @@ def main():
         else:
             info("active_plugins.json not found. Assuming all plugins are PASSIVE.")
 
-        # Email hanya dikirim jika ada baris baru DAN plugin ini aktif DAN email diaktifkan secara global
+        # Email hanya dikirim jika ada baris baru DAN plugin iniaktif DAN email diaktifkan secara global
         email_cfg = cfg.get("email_notifications", {})
         if is_active_plugin and email_cfg.get("enabled", False):
             customer_name = "Default Customer"
